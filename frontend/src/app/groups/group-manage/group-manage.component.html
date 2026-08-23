@@ -1,0 +1,142 @@
+<div class="page">
+  <a routerLink="/dashboard" class="back-link">← חזרה לקבוצות שלי</a>
+
+  @if (loading()) {
+    <p><span class="spinner" aria-hidden="true"></span> טוען...</p>
+  } @else if (loadError()) {
+    <p class="alert alert--danger">{{ loadError() }}</p>
+  } @else if (group(); as g) {
+    <div class="manage-header card card--tab card--teach">
+      <span class="role-tag role-tag--teach">מלמד/ת כאן</span>
+
+      @if (!editingInfo()) {
+        <div class="manage-header__row">
+          <div>
+            <h1>{{ g.name }}</h1>
+            @if (g.description) {
+              <p style="color: var(--ink-soft)">{{ g.description }}</p>
+            }
+          </div>
+          <button class="btn btn--ghost btn--sm" type="button" (click)="editingInfo.set(true)">
+            עריכת פרטים
+          </button>
+        </div>
+      } @else {
+        <form [formGroup]="infoForm" (ngSubmit)="saveInfo()" novalidate>
+          <div class="field">
+            <label for="g-name">שם הקבוצה</label>
+            <input id="g-name" type="text" formControlName="name" />
+          </div>
+          <div class="field">
+            <label for="g-desc">תיאור</label>
+            <textarea id="g-desc" rows="2" formControlName="description"></textarea>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn btn--primary btn--sm" type="submit">שמירה</button>
+            <button class="btn btn--ghost btn--sm" type="button" (click)="editingInfo.set(false)">
+              ביטול
+            </button>
+          </div>
+        </form>
+      }
+
+      @if (actionError()) {
+        <p class="alert alert--danger" style="margin-top: 14px;">{{ actionError() }}</p>
+      }
+
+      <div class="manage-header__meta">
+        <span>{{ members().length }} תלמידים</span>
+        <span>{{ videos().length }} סרטונים</span>
+      </div>
+
+      <div class="manage-header__danger">
+        @if (!changingPassword()) {
+          <button class="btn btn--ghost btn--sm" type="button" (click)="changingPassword.set(true)">
+            שינוי סיסמת קבוצה
+          </button>
+        } @else {
+          <form [formGroup]="passwordForm" (ngSubmit)="savePassword()" novalidate class="inline-form">
+            <input type="text" formControlName="new_password" placeholder="סיסמה חדשה" />
+            <button class="btn btn--primary btn--sm" type="submit">עדכון</button>
+            <button class="btn btn--ghost btn--sm" type="button" (click)="changingPassword.set(false)">
+              ביטול
+            </button>
+          </form>
+        }
+        <button class="btn btn--danger btn--sm" type="button" (click)="deleteGroup()">
+          מחיקת הקבוצה
+        </button>
+      </div>
+    </div>
+
+    <section class="dash-section">
+      <h2>תלמידים</h2>
+      @if (members().length) {
+        <ul class="member-list">
+          @for (member of members(); track member.id) {
+            <li>
+              <span>{{ member.username }}</span>
+              <button class="btn btn--danger btn--sm" type="button" (click)="removeMember(member)">
+                הסרה
+              </button>
+            </li>
+          }
+        </ul>
+      } @else {
+        <p class="empty-state">עדיין אין תלמידים בקבוצה זו.</p>
+      }
+    </section>
+
+    <section class="dash-section">
+      <div class="dash-section__head">
+        <h2>סרטונים</h2>
+        @if (!addingVideo()) {
+          <button class="btn btn--primary btn--sm" type="button" (click)="addingVideo.set(true)">
+            + הוספת סרטון
+          </button>
+        }
+      </div>
+
+      @if (addingVideo()) {
+        <app-video-form
+          [submitting]="savingVideo()"
+          (save)="createVideo($event)"
+          (cancel)="addingVideo.set(false)"
+        />
+      }
+
+      @if (videos().length) {
+        <div class="video-list">
+          @for (video of videos(); track video.id) {
+            <article class="card">
+              @if (editingVideoId() === video.id) {
+                <app-video-form
+                  [video]="video"
+                  [submitting]="savingVideo()"
+                  (save)="updateVideo(video, $event)"
+                  (cancel)="editingVideoId.set(null)"
+                />
+              } @else {
+                <h3>{{ video.title }}</h3>
+                @if (video.description) {
+                  <p>{{ video.description }}</p>
+                }
+                <app-video-player [url]="video.url" [title]="video.title" />
+                <div class="video-actions">
+                  <button class="btn btn--ghost btn--sm" type="button" (click)="editingVideoId.set(video.id)">
+                    עריכה
+                  </button>
+                  <button class="btn btn--danger btn--sm" type="button" (click)="deleteVideo(video)">
+                    מחיקה
+                  </button>
+                </div>
+              }
+            </article>
+          }
+        </div>
+      } @else if (!addingVideo()) {
+        <p class="empty-state">עדיין אין סרטונים בקבוצה. הוסיפו את הראשון.</p>
+      }
+    </section>
+  }
+</div>

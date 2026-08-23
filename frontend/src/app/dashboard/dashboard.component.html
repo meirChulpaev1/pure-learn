@@ -1,0 +1,74 @@
+<div class="page">
+  <div class="dash-header">
+    <div>
+      <h1>הקבוצות שלי</h1>
+      <p style="color: var(--ink-soft); margin: 0;">
+        כל קבוצה מסומנת לפי התפקיד שלכם *בה* — מלמד/ת או לומד/ת. אותו משתמש יכול להיות שניהם, בקבוצות שונות.
+      </p>
+    </div>
+    <div class="dash-header__actions">
+      <a class="btn btn--primary" routerLink="/groups/create">קבוצה חדשה</a>
+      <a class="btn btn--accent" routerLink="/groups/join">הצטרפות עם סיסמה</a>
+    </div>
+  </div>
+
+  <section class="dash-section">
+    <h2><span class="role-tag role-tag--teach">מלמד/ת</span> הקבוצות שאני מנהל/ת</h2>
+
+    @if (groupService.myTeachingGroups.isLoading()) {
+    <p><span class="spinner" aria-hidden="true"></span> טוען קבוצות...</p>
+    } @else if (groupService.myTeachingGroups.error()) {
+    <p class="alert alert--danger">שגיאה בטעינת הקבוצות. נסו לרענן את הדף.</p>
+    } @else {
+    <div class="card-grid">
+      @for (group of groupService.myTeachingGroups.value(); track group.id) {
+      <article class="card card--tab card--teach">
+        <span class="role-tag role-tag--teach">מלמד/ת כאן</span>
+        <h3>{{ group.name }}</h3>
+        @if (group.description) {
+        <p>{{ group.description }}</p>
+        }
+        <p style="color: var(--ink-soft); font-size: 0.85rem;">
+          {{ group.videos_count ?? 0 }} סרטונים · {{ group.members_count ?? 0 }} תלמידים
+        </p>
+        <a class="btn btn--ghost btn--sm" [routerLink]="['/groups', group.id, 'manage']">
+          ניהול הקבוצה
+        </a>
+      </article>
+      } @empty {
+      <p routerLink="/groups/create" class="empty-state">עדיין לא יצרתם קבוצה. זה הזמן להתחיל ללמד משהו.</p>
+      }
+    </div>
+    }
+  </section>
+
+  <section class="dash-section">
+    <h2><span class="role-tag role-tag--study">לומד/ת</span> הקבוצות שאני חבר/ה בהן</h2>
+
+    @if (groupService.myStudentGroups.isLoading()) {
+    <p><span class="spinner" aria-hidden="true"></span> טוען קבוצות...</p>
+    } @else if (groupService.myStudentGroups.error()) {
+    <p class="alert alert--danger">שגיאה בטעינת הקבוצות. נסו לרענן את הדף.</p>
+    } @else {
+    <div class="card-grid">
+      @for (group of groupService.myStudentGroups.value(); track group.id) {
+      <article class="card card--tab card--study">
+        <span class="role-tag role-tag--study">לומד/ת כאן</span>
+        <h3>{{ group.name }}</h3>
+        @if (group.description) {
+        <p>{{ group.description }}</p>
+        }
+        <p style="color: var(--ink-soft); font-size: 0.85rem;">
+          {{ group.videos_count ?? 0 }} סרטונים
+        </p>
+        <a class="btn btn--ghost btn--sm" [routerLink]="['/groups', group.id, 'view']">
+          צפייה בקבוצה
+        </a>
+      </article>
+      } @empty {
+      <p routerLink="/groups/join" class="empty-state">עדיין לא הצטרפתם לקבוצה. בקשו סיסמה מהמורה שלכם.</p>
+      }
+    </div>
+    }
+  </section>
+</div>

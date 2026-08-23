@@ -1,0 +1,19 @@
+<header class="top-nav">
+  <a class="top-nav__brand" routerLink="/dashboard">
+    <span aria-hidden="true">📓</span>
+    קבוצות לימוד
+  </a>
+
+  @if (auth.isLoggedIn()) {
+    <div class="top-nav__actions">
+      @if (displayName()) {
+        <span>שלום, {{ displayName() }}</span>
+      }
+      <button class="btn btn--ghost btn--sm" type="button" (click)="logout()">התנתקות</button>
+    </div>
+  }
+</header>
+
+<main>
+  <router-outlet />
+</main>

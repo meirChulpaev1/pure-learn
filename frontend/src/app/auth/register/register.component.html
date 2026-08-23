@@ -1,0 +1,47 @@
+<div class="page page--narrow">
+  <div class="card">
+    <h1>הצטרפות</h1>
+    <p style="color: var(--ink-soft)">יצירת חשבון אחד — תוכלו להיות גם מורה וגם תלמיד/ה, לפי הקבוצה.</p>
+
+    @if (errorMessage()) {
+      <p class="alert alert--danger" role="alert">{{ errorMessage() }}</p>
+    }
+
+    <form [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <div class="field">
+        <label for="username">שם משתמש</label>
+        <input id="username" type="text" formControlName="username" autocomplete="username" />
+        @if (form.controls.username.touched && form.controls.username.invalid) {
+          <span class="field-error">לפחות 3 תווים.</span>
+        }
+      </div>
+
+      <div class="field">
+        <label for="email">אימייל</label>
+        <input id="email" type="email" formControlName="email" autocomplete="email" />
+        @if (form.controls.email.touched && form.controls.email.invalid) {
+          <span class="field-error">כתובת אימייל לא תקינה.</span>
+        }
+      </div>
+
+      <div class="field">
+        <label for="password">סיסמה</label>
+        <input id="password" type="password" formControlName="password" autocomplete="new-password" />
+        @if (form.controls.password.touched && form.controls.password.invalid) {
+          <span class="field-error">לפחות 8 תווים.</span>
+        }
+      </div>
+
+      <button class="btn btn--primary btn--block" type="submit" [disabled]="submitting()">
+        @if (submitting()) {
+          <span class="spinner" aria-hidden="true"></span>
+        }
+        יצירת חשבון
+      </button>
+    </form>
+
+    <p style="margin-top: 18px; text-align: center;">
+      כבר יש לכם חשבון? <a routerLink="/login">התחברות</a>
+    </p>
+  </div>
+</div>

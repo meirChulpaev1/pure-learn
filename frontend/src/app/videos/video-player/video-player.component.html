@@ -1,0 +1,15 @@
+@if (embedUrl(); as src) {
+  <div class="video-frame">
+    <iframe
+      [src]="src"
+      [title]="title() || 'נגן וידאו'"
+      loading="lazy"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+      allowfullscreen
+    ></iframe>
+  </div>
+} @else {
+  <a class="btn btn--ghost btn--sm" [href]="url()" target="_blank" rel="noopener noreferrer">
+    פתיחת הסרטון בחלון חדש ↗
+  </a>
+}

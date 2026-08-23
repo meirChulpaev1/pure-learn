@@ -1,0 +1,27 @@
+.back-link {
+  display: inline-block;
+  margin-bottom: 20px;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.view-header {
+  margin-bottom: 32px;
+}
+
+.dash-section {
+  margin-bottom: 40px;
+}
+
+.video-list {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.video-meta {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  margin-top: 10px;
+  margin-bottom: 0;
+}

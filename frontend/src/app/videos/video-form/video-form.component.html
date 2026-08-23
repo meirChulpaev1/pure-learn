@@ -1,0 +1,32 @@
+<form [formGroup]="form" (ngSubmit)="submit()" novalidate class="video-form">
+  <div class="field">
+    <label for="v-title">כותרת</label>
+    <input id="v-title" type="text" formControlName="title" />
+    @if (form.controls.title.touched && form.controls.title.invalid) {
+      <span class="field-error">כותרת היא שדה חובה.</span>
+    }
+  </div>
+
+  <div class="field">
+    <label for="v-url">קישור לסרטון</label>
+    <input id="v-url" type="url" formControlName="url" placeholder="https://youtube.com/watch?v=..." />
+    @if (form.controls.url.touched && form.controls.url.invalid) {
+      <span class="field-error">יש להזין קישור תקין (https://...).</span>
+    }
+  </div>
+
+  <div class="field">
+    <label for="v-desc">תיאור (לא חובה)</label>
+    <textarea id="v-desc" rows="2" formControlName="description"></textarea>
+  </div>
+
+  <div style="display: flex; gap: 10px;">
+    <button class="btn btn--primary btn--sm" type="submit" [disabled]="submitting()">
+      @if (submitting()) {
+        <span class="spinner" aria-hidden="true"></span>
+      }
+      {{ video() ? 'שמירת שינויים' : 'הוספת סרטון' }}
+    </button>
+    <button class="btn btn--ghost btn--sm" type="button" (click)="cancel.emit()">ביטול</button>
+  </div>
+</form>

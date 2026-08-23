@@ -1,0 +1,31 @@
+<div class="page page--narrow">
+  <div class="card card--tab card--study">
+    <span class="role-tag role-tag--study">הצטרפות — לומד/ת</span>
+    <h1>הצטרפות לקבוצה</h1>
+    <p style="color: var(--ink-soft);">קבלו את הסיסמה מהמורה שלכם והזינו אותה כאן.</p>
+
+    @if (errorMessage()) {
+      <p class="alert alert--danger" role="alert">{{ errorMessage() }}</p>
+    }
+
+    <form [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <div class="field">
+        <label for="password">סיסמת הקבוצה</label>
+        <input id="password" type="text" formControlName="password" autocomplete="off" />
+        @if (form.controls.password.touched && form.controls.password.invalid) {
+          <span class="field-error">יש להזין סיסמה.</span>
+        }
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn--accent" type="submit" [disabled]="submitting()">
+          @if (submitting()) {
+            <span class="spinner" aria-hidden="true"></span>
+          }
+          הצטרפות
+        </button>
+        <a class="btn btn--ghost" routerLink="/dashboard">ביטול</a>
+      </div>
+    </form>
+  </div>
+</div>

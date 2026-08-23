@@ -1,0 +1,37 @@
+<div class="page">
+  <a routerLink="/dashboard" class="back-link">← חזרה לקבוצות שלי</a>
+
+  @if (loading()) {
+    <p><span class="spinner" aria-hidden="true"></span> טוען...</p>
+  } @else if (loadError()) {
+    <p class="alert alert--danger">{{ loadError() }}</p>
+  } @else if (group(); as g) {
+    <div class="card card--tab card--study view-header">
+      <span class="role-tag role-tag--study">לומד/ת כאן</span>
+      <h1>{{ g.name }}</h1>
+      @if (g.description) {
+        <p style="color: var(--ink-soft)">{{ g.description }}</p>
+      }
+    </div>
+
+    <section class="dash-section">
+      <h2>סרטונים</h2>
+      @if (videos().length) {
+        <div class="video-list">
+          @for (video of videos(); track video.id) {
+            <article class="card">
+              <h3>{{ video.title }}</h3>
+              @if (video.description) {
+                <p>{{ video.description }}</p>
+              }
+              <app-video-player [url]="video.url" [title]="video.title" />
+              <p class="video-meta">הועלה על ידי {{ video.uploader_username }}</p>
+            </article>
+          }
+        </div>
+      } @else {
+        <p class="empty-state">המורה עדיין לא העלה סרטונים לקבוצה זו.</p>
+      }
+    </section>
+  }
+</div>

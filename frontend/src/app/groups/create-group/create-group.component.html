@@ -1,0 +1,46 @@
+<div class="page page--narrow">
+  <div class="card card--tab card--teach">
+    <span class="role-tag role-tag--teach">קבוצה חדשה — מלמד/ת</span>
+    <h1>פתיחת קבוצת לימוד</h1>
+    <p style="color: var(--ink-soft);">
+      בחרו סיסמת קבוצה ותנו אותה לתלמידים שלכם. הסיסמה נשמרת מוצפנת ולא ניתנת לשחזור — רק לשינוי.
+    </p>
+
+    @if (errorMessage()) {
+      <p class="alert alert--danger" role="alert">{{ errorMessage() }}</p>
+    }
+
+    <form [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <div class="field">
+        <label for="name">שם הקבוצה</label>
+        <input id="name" type="text" formControlName="name" />
+        @if (form.controls.name.touched && form.controls.name.invalid) {
+          <span class="field-error">שם הקבוצה הוא שדה חובה.</span>
+        }
+      </div>
+
+      <div class="field">
+        <label for="description">תיאור (לא חובה)</label>
+        <textarea id="description" rows="3" formControlName="description"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="password">סיסמת הקבוצה</label>
+        <input id="password" type="text" formControlName="password" />
+        @if (form.controls.password.touched && form.controls.password.invalid) {
+          <span class="field-error">לפחות 4 תווים.</span>
+        }
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn--primary" type="submit" [disabled]="submitting()">
+          @if (submitting()) {
+            <span class="spinner" aria-hidden="true"></span>
+          }
+          יצירת קבוצה
+        </button>
+        <a class="btn btn--ghost" routerLink="/dashboard">ביטול</a>
+      </div>
+    </form>
+  </div>
+</div>

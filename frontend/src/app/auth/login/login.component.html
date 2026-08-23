@@ -1,0 +1,39 @@
+<div class="page page--narrow">
+  <div class="card">
+    <h1>ברוכים השבים</h1>
+    <p style="color: var(--ink-soft)">התחברות כדי לראות את הקבוצות שלכם.</p>
+
+    @if (errorMessage()) {
+      <p class="alert alert--danger" role="alert">{{ errorMessage() }}</p>
+    }
+
+    <form [formGroup]="form" (ngSubmit)="submit()" novalidate>
+      <div class="field">
+        <label for="username">שם משתמש</label>
+        <input id="username" type="text" formControlName="username" autocomplete="username" />
+        @if (form.controls.username.touched && form.controls.username.invalid) {
+          <span class="field-error">שדה חובה.</span>
+        }
+      </div>
+
+      <div class="field">
+        <label for="password">סיסמה</label>
+        <input id="password" type="password" formControlName="password" autocomplete="current-password" />
+        @if (form.controls.password.touched && form.controls.password.invalid) {
+          <span class="field-error">שדה חובה.</span>
+        }
+      </div>
+
+      <button class="btn btn--primary btn--block" type="submit" [disabled]="submitting()">
+        @if (submitting()) {
+          <span class="spinner" aria-hidden="true"></span>
+        }
+        התחברות
+      </button>
+    </form>
+
+    <p style="margin-top: 18px; text-align: center;">
+      עדיין אין לכם חשבון? <a routerLink="/register">הרשמה</a>
+    </p>
+  </div>
+</div>

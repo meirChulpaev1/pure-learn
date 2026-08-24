@@ -1,0 +1,77 @@
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1>הקבוצות שלי</h1>
+      <p>קבוצות שאתה מנהל וקבוצות שהצטרפת אליהן — הכל במקום אחד.</p>
+    </div>
+    <div class="header-actions">
+      <a routerLink="/groups/join" class="btn btn-ghost">הצטרפות לקבוצה</a>
+      <a routerLink="/groups/create" class="btn btn-accent">קבוצה חדשה</a>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section-title">
+      <h2>קבוצות שאני מנהל</h2>
+      <span class="count">{{ teaching.value().length }}</span>
+    </div>
+
+    @if (teaching.isLoading()) {
+      <p class="loading-text">טוען...</p>
+    } @else if (teaching.error()) {
+      <div class="form-error-banner">לא ניתן לטעון את הקבוצות. נסה לרענן את הדף.</div>
+    } @else if (teaching.value().length === 0) {
+      <div class="empty-state">
+        <p>עדיין לא יצרת קבוצות.</p>
+        <a routerLink="/groups/create" class="btn btn-accent btn-sm">יצירת קבוצה ראשונה</a>
+      </div>
+    } @else {
+      <div class="grid">
+        @for (group of teaching.value(); track group.id) {
+          <article class="index-card" style="--tab-color: var(--color-teal);">
+            <span class="tab-label">מנהל/ת</span>
+            <h3>{{ group.name }}</h3>
+            <p class="desc">{{ group.description || 'ללא תיאור' }}</p>
+            <div class="meta">
+              <span>{{ group.videos_count }} סרטונים</span>
+              <span>{{ group.members_count }} תלמידים</span>
+            </div>
+            <a [routerLink]="['/groups', group.id, 'manage']" class="btn btn-primary btn-sm">ניהול</a>
+          </article>
+        }
+      </div>
+    }
+  </section>
+
+  <section class="section">
+    <div class="section-title">
+      <h2>קבוצות שהצטרפתי אליהן</h2>
+      <span class="count">{{ student.value().length }}</span>
+    </div>
+
+    @if (student.isLoading()) {
+      <p class="loading-text">טוען...</p>
+    } @else if (student.error()) {
+      <div class="form-error-banner">לא ניתן לטעון את הקבוצות. נסה לרענן את הדף.</div>
+    } @else if (student.value().length === 0) {
+      <div class="empty-state">
+        <p>עדיין לא הצטרפת לקבוצות.</p>
+        <a routerLink="/groups/join" class="btn btn-ghost btn-sm">הצטרפות לקבוצה</a>
+      </div>
+    } @else {
+      <div class="grid">
+        @for (group of student.value(); track group.id) {
+          <article class="index-card" style="--tab-color: var(--color-accent);">
+            <span class="tab-label">חבר/ה</span>
+            <h3>{{ group.name }}</h3>
+            <p class="desc">{{ group.description || 'ללא תיאור' }}</p>
+            <div class="meta">
+              <span>{{ group.videos_count }} סרטונים</span>
+            </div>
+            <a [routerLink]="['/groups', group.id, 'view']" class="btn btn-ghost btn-sm">צפייה</a>
+          </article>
+        }
+      </div>
+    }
+  </section>
+</div>

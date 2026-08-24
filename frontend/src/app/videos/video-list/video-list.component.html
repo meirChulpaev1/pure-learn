@@ -1,0 +1,40 @@
+@if (videos().length === 0) {
+  <div class="empty-state">
+    <p>{{ canManage() ? 'עדיין לא הוספת סרטונים לקבוצה.' : 'עדיין אין סרטונים בקבוצה זו.' }}</p>
+  </div>
+} @else {
+  <ul class="video-list">
+    @for (video of videos(); track video.id) {
+      <li class="video-item" [class.expanded]="isExpanded(video)" data-testid="video-row">
+        <div
+          class="video-row"
+          role="button"
+          tabindex="0"
+          (click)="toggle(video)"
+          (keydown.enter)="toggle(video)"
+          (keydown.space)="toggle(video); $event.preventDefault()"
+        >
+          <span class="play-icon" aria-hidden="true">{{ isExpanded(video) ? '▾' : '▸' }}</span>
+          <span class="video-title">{{ video.title }}</span>
+          <span class="video-meta">הועלה ע"י {{ video.uploader_username }}</span>
+
+          @if (canManage()) {
+            <span class="video-actions">
+              <button type="button" class="btn btn-ghost btn-sm" data-testid="edit-video" (click)="onEdit($event, video)">עריכה</button>
+              <button type="button" class="btn btn-danger btn-sm" data-testid="delete-video" (click)="onDelete($event, video)">מחיקה</button>
+            </span>
+          }
+        </div>
+
+        @if (isExpanded(video)) {
+          <div class="video-expanded">
+            @if (video.description) {
+              <p class="video-description">{{ video.description }}</p>
+            }
+            <app-video-player [video]="video" />
+          </div>
+        }
+      </li>
+    }
+  </ul>
+}

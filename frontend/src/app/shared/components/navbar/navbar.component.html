@@ -1,0 +1,19 @@
+<header class="navbar">
+  <a routerLink="/dashboard" class="brand">
+    <span class="brand-mark">01</span>
+    קבוצות לימוד
+  </a>
+
+  <nav class="links">
+    <a routerLink="/dashboard" routerLinkActive="active">הקבוצות שלי</a>
+    <a routerLink="/groups/create" routerLinkActive="active">קבוצה חדשה</a>
+    <a routerLink="/groups/join" routerLinkActive="active">הצטרפות</a>
+  </nav>
+
+  <div class="user">
+    @if (currentUser(); as user) {
+      <span class="username">{{ user.username }}</span>
+    }
+    <button type="button" class="btn btn-ghost btn-sm" (click)="onLogout()">התנתקות</button>
+  </div>
+</header>

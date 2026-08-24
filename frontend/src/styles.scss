@@ -1,0 +1,386 @@
+/* ==========================================================================
+   Design tokens
+   קונספט: "מחברת רישום נוכחות" — עולם בית-ספרי מודרני, לא ילדותי.
+   כרטיסי קבוצה = "כרטיסי אינדקס", רשימת חברים = "רשימת נוכחות" ממוספרת
+   (המספור כאן משמעותי — הוא סדר ההצטרפות בפועל, לא קישוט).
+   ========================================================================== */
+
+:root {
+  /* Color */
+  --color-ink: #16262b;           /* משטחים כהים: nav, hero, כותרות בולטות */
+  --color-ink-soft: #223a41;
+  --color-paper: #eee9de;         /* רקע העמוד — גריג' חמים, לא קרם קלאסי */
+  --color-surface: #ffffff;       /* כרטיסים/טפסים על גבי הנייר */
+  --color-line: #d8d0bd;          /* קווי מתאר עדינים */
+  --color-text: #1c1a16;
+  --color-text-muted: #6b6558;
+  --color-accent: #c98a2c;        /* ענבר/חרדל — סימון, הדגשה, CTA */
+  --color-accent-ink: #4a2f06;
+  --color-teal: #2f6f63;          /* ירוק-אשד — הצלחה / "מורה"/owner */
+  --color-brick: #b3492f;         /* לבנים עמומות — סכנה/מחיקה, לא אדום בוטה */
+
+  /* Type */
+  --font-display: 'Frank Ruhl Libre', 'David Libre', serif;
+  --font-body: 'Heebo', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Courier New', monospace;
+
+  /* Layout */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-card: 0 1px 2px rgba(22, 38, 43, 0.06), 0 6px 20px rgba(22, 38, 43, 0.07);
+  --max-width: 960px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+  color: var(--color-ink);
+}
+
+h1 { font-size: 2.1rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.15rem; }
+
+p { margin: 0 0 1em; }
+
+a {
+  color: var(--color-teal);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+/* visible keyboard focus everywhere — accessibility floor */
+:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ==========================================================================
+   Layout helpers
+   ========================================================================== */
+
+.page {
+  max-width: var(--max-width);
+  margin-inline: auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.page.narrow {
+  max-width: 560px;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-line);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.page-header p {
+  margin: 0.25rem 0 0;
+  color: var(--color-text-muted);
+}
+
+.section {
+  margin-bottom: 2.5rem;
+}
+
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.section-title .count {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+/* ==========================================================================
+   Cards — "index card" signature
+   ========================================================================== */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 1.25rem;
+}
+
+.index-card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 1.1rem 1.25rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow: hidden;
+}
+
+.index-card::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: var(--tab-color, var(--color-teal));
+}
+
+.index-card .tab-label {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-surface);
+  background: var(--tab-color, var(--color-teal));
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.index-card h3 {
+  margin: 0;
+}
+
+.index-card .desc {
+  color: var(--color-text-muted);
+  font-size: 0.92rem;
+  flex-grow: 1;
+}
+
+.index-card .meta {
+  display: flex;
+  gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.92rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.06s ease, filter 0.15s ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
+
+.btn-accent {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+.btn-accent:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+.btn-ghost:hover:not(:disabled) { background: rgba(22, 38, 43, 0.05); }
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--color-brick);
+  color: var(--color-brick);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(179, 73, 47, 0.08); }
+
+.btn-sm { padding: 0.35rem 0.7rem; font-size: 0.82rem; }
+
+/* ==========================================================================
+   Forms
+   ========================================================================== */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1.1rem;
+}
+
+.label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.input, textarea.input {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  width: 100%;
+}
+.input:focus { border-color: var(--color-accent); }
+.input.ng-invalid.ng-touched { border-color: var(--color-brick); }
+
+.input-mono { font-family: var(--font-mono); letter-spacing: 0.03em; }
+
+.error-text {
+  font-size: 0.8rem;
+  color: var(--color-brick);
+}
+
+.form-error-banner {
+  background: rgba(179, 73, 47, 0.08);
+  border: 1px solid rgba(179, 73, 47, 0.35);
+  color: var(--color-brick);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  margin-bottom: 1rem;
+}
+
+.form-success-banner {
+  background: rgba(47, 111, 99, 0.09);
+  border: 1px solid rgba(47, 111, 99, 0.35);
+  color: var(--color-teal);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  margin-bottom: 1rem;
+}
+
+/* ==========================================================================
+   Badges / states
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+}
+.badge-owner { background: rgba(47, 111, 99, 0.12); color: var(--color-teal); }
+.badge-member { background: rgba(201, 138, 44, 0.14); color: var(--color-accent-ink); }
+
+.empty-state {
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-md);
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.loading-text {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+/* ==========================================================================
+   Roster — numbered attendance rows (meaningful order = join order)
+   ========================================================================== */
+
+.roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.roster-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.roster-row:last-child { border-bottom: none; }
+
+.roster-row .index {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  width: 1.6rem;
+  text-align: center;
+}
+
+.roster-row .name { font-weight: 600; flex-grow: 1; }
+.roster-row .date { font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-muted); }

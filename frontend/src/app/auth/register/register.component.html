@@ -1,0 +1,53 @@
+<div class="auth-page">
+  <form class="card auth-card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    <div class="auth-header">
+      <span class="tab-label" style="--tab-color: var(--color-accent);">חשבון חדש</span>
+      <h1>הרשמה</h1>
+      <p>חשבון אחד מספיק — תוכל גם ליצור קבוצות משלך וגם להצטרף לקבוצות של אחרים.</p>
+    </div>
+
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="username">שם משתמש</label>
+      <input id="username" type="text" class="input" formControlName="username" autocomplete="username" />
+      @if (username.invalid && username.touched) {
+        <span class="error-text">שם משתמש חייב להכיל לפחות 3 תווים.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="email">אימייל</label>
+      <input id="email" type="email" class="input" formControlName="email" autocomplete="email" />
+      @if (email.invalid && email.touched) {
+        <span class="error-text">יש להזין כתובת אימייל תקינה.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="password">סיסמה</label>
+      <input id="password" type="password" class="input" formControlName="password" autocomplete="new-password" />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">הסיסמה חייבת להכיל לפחות 8 תווים.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="confirmPassword">אימות סיסמה</label>
+      <input id="confirmPassword" type="password" class="input" formControlName="confirmPassword" autocomplete="new-password" />
+      @if (form.errors?.['passwordMismatch'] && confirmPassword.touched) {
+        <span class="error-text">הסיסמאות אינן תואמות.</span>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-primary" [disabled]="isSubmitting()">
+      {{ isSubmitting() ? 'נרשם...' : 'הרשמה' }}
+    </button>
+
+    <p class="auth-footer">
+      כבר יש לך חשבון? <a routerLink="/login">התחברות</a>
+    </p>
+  </form>
+</div>

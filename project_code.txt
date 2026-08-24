@@ -1,0 +1,4987 @@
+
+============================================================
+FILE: .\backend\manage.py
+============================================================
+
+#!/usr/bin/env python
+"""Django's command-line utility for administrative tasks."""
+import os
+import sys
+
+
+def main():
+    """Run administrative tasks."""
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
+
+
+if __name__ == '__main__':
+    main()
+
+
+============================================================
+FILE: .\backend\apps\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\backend\apps\groups\admin.py
+============================================================
+
+from django.contrib import admin
+
+from .models import Group, GroupMember
+
+
+@admin.register(Group)
+class GroupAdmin(admin.ModelAdmin):
+    list_display = ['name', 'owner', 'created_at']
+    search_fields = ['name', 'owner__username']
+    readonly_fields = ['password_hash', 'created_at', 'updated_at']
+
+
+@admin.register(GroupMember)
+class GroupMemberAdmin(admin.ModelAdmin):
+    list_display = ['group', 'user', 'joined_at']
+
+
+============================================================
+FILE: .\backend\apps\groups\apps.py
+============================================================
+
+from django.apps import AppConfig
+
+
+class GroupsConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'apps.groups'
+    label = 'groups'
+
+
+============================================================
+FILE: .\backend\apps\groups\models.py
+============================================================
+
+import uuid
+
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
+from django.db import models
+
+
+class Group(models.Model):
+    """
+    קבוצת לימוד. ה-owner הוא ה'מורה' של הקבוצה הזו בלבד — אין שדה role גלובלי.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, default='')
+    password_hash = models.CharField(max_length=255)  # לעולם לא טקסט גלוי
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='owned_groups',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def set_password(self, raw_password: str) -> None:
+        self.password_hash = make_password(raw_password)
+
+    def check_password(self, raw_password: str) -> bool:
+        return check_password(raw_password, self.password_hash)
+
+    def is_member(self, user) -> bool:
+        return self.members.filter(user_id=user.id).exists()
+
+    def is_owner(self, user) -> bool:
+        return self.owner_id == user.id
+
+    def __str__(self):
+        return f'{self.name} (owner={self.owner_id})'
+
+
+class GroupMember(models.Model):
+    """טבלת קשר: משתמש שהצטרף לקבוצה כ'תלמיד'/חבר."""
+    id = models.BigAutoField(primary_key=True)
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='members')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='group_memberships',
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['group', 'user'], name='unique_group_member')
+        ]
+        ordering = ['-joined_at']
+
+    def __str__(self):
+        return f'user={self.user_id} in group={self.group_id}'
+
+
+============================================================
+FILE: .\backend\apps\groups\permissions.py
+============================================================
+
+from rest_framework.permissions import BasePermission
+
+
+def _resolve_group(obj):
+    """
+    obj יכול להיות Group עצמו, או כל אובייקט אחר שיש לו FK בשם 'group' (כמו Video).
+    """
+    return obj if hasattr(obj, 'owner_id') else obj.group
+
+
+class IsGroupOwner(BasePermission):
+    """
+    True אך ורק אם request.user הוא ה-Owner של הקבוצה.
+    משמש לכל פעולת ניהול: יצירת/עריכת/מחיקת וידאו, עריכת קבוצה, שינוי סיסמה, ניהול חברים.
+    """
+    message = 'רק בעל הקבוצה (Owner) רשאי לבצע פעולה זו.'
+
+    def has_object_permission(self, request, view, obj):
+        group = _resolve_group(obj)
+        return group.owner_id == request.user.id
+
+
+class IsGroupOwnerOrMember(BasePermission):
+    """
+    True אם המשתמש הוא Owner *או* חבר רשום (GroupMember) בקבוצה.
+    משמש לכל פעולת קריאה (GET) של תוכן קבוצה: פרטי קבוצה, רשימת סרטונים, פרטי סרטון.
+    """
+    message = 'אין לך גישה לקבוצה זו.'
+
+    def has_object_permission(self, request, view, obj):
+        group = _resolve_group(obj)
+        if group.owner_id == request.user.id:
+            return True
+        return group.members.filter(user_id=request.user.id).exists()
+
+
+============================================================
+FILE: .\backend\apps\groups\serializers.py
+============================================================
+
+from rest_framework import serializers
+
+from apps.users.serializers import UserSerializer
+
+from .models import Group, GroupMember
+
+
+class GroupCreateSerializer(serializers.ModelSerializer):
+    """POST /api/groups/  — יצירת קבוצה חדשה."""
+    password = serializers.CharField(write_only=True, min_length=4, max_length=128)
+
+    class Meta:
+        model = Group
+        fields = ['id', 'name', 'description', 'password', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def validate_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('שם הקבוצה לא יכול להיות ריק.')
+        return value
+
+    def create(self, validated_data):
+        raw_password = validated_data.pop('password')
+        group = Group(owner=self.context['request'].user, **validated_data)
+        group.set_password(raw_password)
+        group.save()
+        return group
+
+
+class GroupSummarySerializer(serializers.ModelSerializer):
+    """לשימוש ברשימות ה-Dashboard (My Teaching / My Student Groups) — כולל ספירות."""
+    videos_count = serializers.IntegerField(read_only=True)
+    members_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Group
+        fields = ['id', 'name', 'description', 'videos_count', 'members_count', 'created_at']
+
+
+class GroupDetailSerializer(serializers.ModelSerializer):
+    """
+    GET /api/groups/{id}/  — פרטי קבוצה.
+    is_owner נחשב דינמית ביחס למי ששולח את הבקשה, כדי שה-Frontend ידע איזה UI להציג
+    (אך זכרו: זו נוחות בלבד, לא מנגנון ההרשאה עצמו — זה תמיד נאכף מחדש בשרת).
+    """
+    owner_username = serializers.CharField(source='owner.username', read_only=True)
+    is_owner = serializers.SerializerMethodField()
+    videos_count = serializers.SerializerMethodField()
+    members_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Group
+        fields = [
+            'id', 'name', 'description', 'owner_username',
+            'is_owner', 'videos_count', 'members_count', 'created_at',
+        ]
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        return bool(request and obj.owner_id == request.user.id)
+
+    def get_videos_count(self, obj):
+        return obj.videos.count()
+
+    def get_members_count(self, obj):
+        return obj.members.count()
+
+
+class GroupUpdateSerializer(serializers.ModelSerializer):
+    """PATCH /api/groups/{id}/  — Owner בלבד."""
+
+    class Meta:
+        model = Group
+        fields = ['name', 'description']
+
+    def validate_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('שם הקבוצה לא יכול להיות ריק.')
+        return value
+
+
+class ChangeGroupPasswordSerializer(serializers.Serializer):
+    """PATCH /api/groups/{id}/change-password/  — Owner בלבד."""
+    new_password = serializers.CharField(min_length=4, max_length=128)
+
+
+class JoinGroupSerializer(serializers.Serializer):
+    """POST /api/groups/join/  — לפי סיסמת קבוצה בלבד."""
+    password = serializers.CharField(write_only=True)
+
+
+class GroupMemberSerializer(serializers.ModelSerializer):
+    """GET /api/groups/{id}/members/  — Owner בלבד."""
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = GroupMember
+        fields = ['id', 'user', 'joined_at']
+
+
+============================================================
+FILE: .\backend\apps\groups\urls.py
+============================================================
+
+from django.urls import path
+
+from .views import (
+    ChangeGroupPasswordView,
+    GroupCreateView,
+    GroupDetailView,
+    GroupMemberRemoveView,
+    GroupMembersListView,
+    JoinGroupView,
+    MyStudentGroupsView,
+    MyTeachingGroupsView,
+)
+
+urlpatterns = [
+    path('my-teaching/', MyTeachingGroupsView.as_view(), name='groups-my-teaching'),
+    path('my-student/', MyStudentGroupsView.as_view(), name='groups-my-student'),
+    path('join/', JoinGroupView.as_view(), name='groups-join'),
+    path('', GroupCreateView.as_view(), name='groups-create'),
+    path('<uuid:id>/', GroupDetailView.as_view(), name='groups-detail'),
+    path('<uuid:id>/change-password/', ChangeGroupPasswordView.as_view(), name='groups-change-password'),
+    path('<uuid:id>/members/', GroupMembersListView.as_view(), name='groups-members'),
+    path('<uuid:id>/members/<int:user_id>/', GroupMemberRemoveView.as_view(), name='groups-member-remove'),
+]
+
+
+============================================================
+FILE: .\backend\apps\groups\views.py
+============================================================
+
+from django.db.models import Count
+from django.shortcuts import get_object_or_404
+from rest_framework import generics, permissions, status
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+
+from .models import Group, GroupMember
+from .permissions import IsGroupOwner, IsGroupOwnerOrMember
+from .serializers import (
+    ChangeGroupPasswordSerializer,
+    GroupCreateSerializer,
+    GroupDetailSerializer,
+    GroupMemberSerializer,
+    GroupSummarySerializer,
+    GroupUpdateSerializer,
+    JoinGroupSerializer,
+)
+
+
+class MyTeachingGroupsView(generics.ListAPIView):
+    """GET /api/groups/my-teaching/  — קבוצות שהמשתמש הוא ה-Owner שלהן."""
+    serializer_class = GroupSummarySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            Group.objects.filter(owner=self.request.user)
+            .annotate(
+                videos_count=Count('videos', distinct=True),
+                members_count=Count('members', distinct=True),
+            )
+        )
+
+
+class MyStudentGroupsView(generics.ListAPIView):
+    """GET /api/groups/my-student/  — קבוצות שהמשתמש הצטרף אליהן כחבר."""
+    serializer_class = GroupSummarySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            Group.objects.filter(members__user=self.request.user)
+            .annotate(
+                videos_count=Count('videos', distinct=True),
+                members_count=Count('members', distinct=True),
+            )
+        )
+
+
+class GroupCreateView(generics.CreateAPIView):
+    """POST /api/groups/  — יצירת קבוצה חדשה. היוצר הופך אוטומטית ל-Owner."""
+    serializer_class = GroupCreateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+class GroupDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /api/groups/{id}/  — Owner או Member.
+    PATCH  /api/groups/{id}/  — Owner בלבד.
+    DELETE /api/groups/{id}/  — Owner בלבד.
+    """
+    queryset = Group.objects.all()
+    lookup_field = 'id'
+    lookup_url_kwarg = 'id'
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.IsAuthenticated(), IsGroupOwnerOrMember()]
+        return [permissions.IsAuthenticated(), IsGroupOwner()]
+
+    def get_serializer_class(self):
+        if self.request.method == 'GET':
+            return GroupDetailSerializer
+        return GroupUpdateSerializer
+
+    def get_object(self):
+        obj = get_object_or_404(Group, id=self.kwargs['id'])
+        self.check_object_permissions(self.request, obj)
+        return obj
+
+
+class ChangeGroupPasswordView(APIView):
+    """PATCH /api/groups/{id}/change-password/  — Owner בלבד."""
+    permission_classes = [permissions.IsAuthenticated, IsGroupOwner]
+
+    def patch(self, request, id):
+        group = get_object_or_404(Group, id=id)
+        self.check_object_permissions(request, group)
+
+        serializer = ChangeGroupPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        group.set_password(serializer.validated_data['new_password'])
+        group.save(update_fields=['password_hash', 'updated_at'])
+        return Response({'detail': 'סיסמת הקבוצה עודכנה בהצלחה.'}, status=status.HTTP_200_OK)
+
+
+class JoinGroupView(APIView):
+    """
+    POST /api/groups/join/  {password}
+    השרת סורק קבוצות ומחפש התאמת סיסמה (hash), ולא מקבל group id מהלקוח —
+    כי בפועל התלמיד מקבל מהמורה רק סיסמה.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'join_group'
+
+    def post(self, request):
+        serializer = JoinGroupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        raw_password = serializer.validated_data['password']
+
+        matched_group = None
+        for group in Group.objects.all():
+            if group.check_password(raw_password):
+                matched_group = group
+                break
+
+        if matched_group is None:
+            return Response({'detail': 'סיסמה שגויה.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if matched_group.owner_id == request.user.id:
+            return Response(
+                {'detail': 'אתה כבר ה-Owner של קבוצה זו.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, created = GroupMember.objects.get_or_create(group=matched_group, user=request.user)
+        if not created:
+            return Response(
+                {'detail': 'כבר הצטרפת לקבוצה זו בעבר.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            GroupDetailSerializer(matched_group, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class GroupMembersListView(generics.ListAPIView):
+    """GET /api/groups/{id}/members/  — Owner בלבד."""
+    serializer_class = GroupMemberSerializer
+    permission_classes = [permissions.IsAuthenticated, IsGroupOwner]
+
+    def get_queryset(self):
+        group = get_object_or_404(Group, id=self.kwargs['id'])
+        self.check_object_permissions(self.request, group)
+        return group.members.select_related('user')
+
+
+class GroupMemberRemoveView(APIView):
+    """DELETE /api/groups/{id}/members/{user_id}/  — Owner בלבד."""
+    permission_classes = [permissions.IsAuthenticated, IsGroupOwner]
+
+    def delete(self, request, id, user_id):
+        group = get_object_or_404(Group, id=id)
+        self.check_object_permissions(request, group)
+
+        membership = get_object_or_404(GroupMember, group=group, user_id=user_id)
+        membership.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+============================================================
+FILE: .\backend\apps\groups\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\backend\apps\users\admin.py
+============================================================
+
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+
+from .models import User
+
+admin.site.register(User, UserAdmin)
+
+
+============================================================
+FILE: .\backend\apps\users\apps.py
+============================================================
+
+from django.apps import AppConfig
+
+
+class UsersConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'apps.users'
+    label = 'users'
+
+
+============================================================
+FILE: .\backend\apps\users\models.py
+============================================================
+
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+
+
+class User(AbstractUser):
+    """
+    משתמש בסיסי במערכת.
+    משתמשים ב-AbstractUser המובנה של Django, שכבר כולל:
+    username, password (מוצפן אוטומטית עם PBKDF2), is_active, date_joined וכו'.
+
+    אין כאן שדה 'role' — התפקיד (Owner / Member) נגזר תמיד בהקשר של קבוצה ספציפית,
+    ולא נשמר כתכונה קבועה של המשתמש עצמו.
+    """
+    email = models.EmailField(unique=True)
+
+    REQUIRED_FIELDS = ['email']  # username + password כבר נדרשים כברירת מחדל
+
+    def __str__(self):
+        return self.username
+
+
+============================================================
+FILE: .\backend\apps\users\serializers.py
+============================================================
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from rest_framework import serializers
+
+User = get_user_model()
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """פרטי משתמש בסיסיים (לצפייה, לא לעריכה)."""
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'date_joined']
+        read_only_fields = fields
+
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, validators=[validate_password])
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'password']
+        read_only_fields = ['id']
+
+    def validate_username(self, value):
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError('שם המשתמש כבר תפוס.')
+        return value
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('כתובת האימייל כבר בשימוש.')
+        return value
+
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
+
+============================================================
+FILE: .\backend\apps\users\urls.py
+============================================================
+
+from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView
+
+from .views import LoginView, LogoutView, MeView, RegisterView
+
+urlpatterns = [
+    path('register/', RegisterView.as_view(), name='auth-register'),
+    path('login/', LoginView.as_view(), name='auth-login'),
+    path('refresh/', TokenRefreshView.as_view(), name='auth-refresh'),
+    path('logout/', LogoutView.as_view(), name='auth-logout'),
+    path('me/', MeView.as_view(), name='auth-me'),
+]
+
+
+============================================================
+FILE: .\backend\apps\users\views.py
+============================================================
+
+from rest_framework import generics, permissions, status
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from .serializers import RegisterSerializer, UserSerializer
+
+
+class RegisterView(generics.CreateAPIView):
+    """POST /api/auth/register/  — הרשמת משתמש חדש. ציבורי."""
+    permission_classes = [permissions.AllowAny]
+    serializer_class = RegisterSerializer
+
+
+class LoginView(TokenObtainPairView):
+    """
+    POST /api/auth/login/  — מחזיר {access, refresh}.
+    יורש מ-SimpleJWT's TokenObtainPairView, עם throttling ייעודי כדי למנוע ניחוש סיסמאות.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+
+
+class LogoutView(APIView):
+    """POST /api/auth/logout/  {refresh}  — מכניס את ה-refresh token ל-blacklist."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh = request.data.get('refresh')
+        if not refresh:
+            return Response({'detail': 'שדה refresh חובה.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            token = RefreshToken(refresh)
+            token.blacklist()
+        except TokenError:
+            return Response({'detail': 'טוקן לא תקין.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+class MeView(generics.RetrieveAPIView):
+    """GET /api/auth/me/  — פרטי המשתמש המחובר."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserSerializer
+
+    def get_object(self):
+        return self.request.user
+
+
+============================================================
+FILE: .\backend\apps\users\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\backend\apps\videos\admin.py
+============================================================
+
+from django.contrib import admin
+
+from .models import Video
+
+
+@admin.register(Video)
+class VideoAdmin(admin.ModelAdmin):
+    list_display = ['title', 'group', 'uploader', 'created_at']
+    search_fields = ['title', 'group__name']
+
+
+============================================================
+FILE: .\backend\apps\videos\apps.py
+============================================================
+
+from django.apps import AppConfig
+
+
+class VideosConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'apps.videos'
+    label = 'videos'
+
+
+============================================================
+FILE: .\backend\apps\videos\models.py
+============================================================
+
+from django.conf import settings
+from django.db import models
+
+
+class Video(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default='')
+    url = models.URLField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+    uploader = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='uploaded_videos',
+    )
+    group = models.ForeignKey(
+        'groups.Group',
+        on_delete=models.CASCADE,
+        related_name='videos',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.title
+
+
+============================================================
+FILE: .\backend\apps\videos\serializers.py
+============================================================
+
+from rest_framework import serializers
+
+from .models import Video
+
+
+class VideoSerializer(serializers.ModelSerializer):
+    uploader_username = serializers.CharField(source='uploader.username', read_only=True)
+
+    class Meta:
+        model = Video
+        fields = [
+            'id', 'title', 'description', 'url',
+            'created_at', 'uploader_username', 'group',
+        ]
+        read_only_fields = ['id', 'created_at', 'uploader_username', 'group']
+
+    def validate_title(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('כותרת הסרטון לא יכולה להיות ריקה.')
+        return value
+
+
+============================================================
+FILE: .\backend\apps\videos\urls.py
+============================================================
+
+from django.urls import path
+
+from .views import VideoDetailView, VideoListCreateView
+
+urlpatterns = [
+    path('', VideoListCreateView.as_view(), name='videos-list-create'),
+    path('<int:id>/', VideoDetailView.as_view(), name='videos-detail'),
+]
+
+
+============================================================
+FILE: .\backend\apps\videos\views.py
+============================================================
+
+from django.shortcuts import get_object_or_404
+from rest_framework import generics, permissions
+
+from apps.groups.models import Group
+from apps.groups.permissions import IsGroupOwner, IsGroupOwnerOrMember
+
+from .models import Video
+from .serializers import VideoSerializer
+
+
+class VideoListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/groups/{group_id}/videos/   — Owner או Member.
+    POST /api/groups/{group_id}/videos/   — Owner בלבד.
+    """
+    serializer_class = VideoSerializer
+
+    def get_group(self):
+        return get_object_or_404(Group, id=self.kwargs['group_id'])
+
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [permissions.IsAuthenticated(), IsGroupOwner()]
+        return [permissions.IsAuthenticated(), IsGroupOwnerOrMember()]
+
+    def get_queryset(self):
+        group = self.get_group()
+        self.check_object_permissions(self.request, group)
+        return Video.objects.filter(group=group)
+
+    def perform_create(self, serializer):
+        group = self.get_group()
+        self.check_object_permissions(self.request, group)
+        serializer.save(uploader=self.request.user, group=group)
+
+
+class VideoDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /api/groups/{group_id}/videos/{id}/  — Owner או Member.
+    PATCH  /api/groups/{group_id}/videos/{id}/  — Owner בלבד.
+    DELETE /api/groups/{group_id}/videos/{id}/  — Owner בלבד.
+    """
+    serializer_class = VideoSerializer
+    lookup_url_kwarg = 'id'
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.IsAuthenticated(), IsGroupOwnerOrMember()]
+        return [permissions.IsAuthenticated(), IsGroupOwner()]
+
+    def get_queryset(self):
+        return Video.objects.filter(group_id=self.kwargs['group_id'])
+
+    def get_object(self):
+        video = get_object_or_404(
+            Video, id=self.kwargs['id'], group_id=self.kwargs['group_id']
+        )
+        self.check_object_permissions(self.request, video)
+        return video
+
+
+============================================================
+FILE: .\backend\apps\videos\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\backend\config\asgi.py
+============================================================
+
+import os
+
+from django.core.asgi import get_asgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+
+application = get_asgi_application()
+
+
+============================================================
+FILE: .\backend\config\settings.py
+============================================================
+
+"""
+Django settings for the Study Groups project.
+"""
+import os
+from datetime import timedelta
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-only-insecure-secret-key')
+
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+
+    # Third party
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
+    'corsheaders',
+
+    # Local apps
+    'apps.users',
+    'apps.groups',
+    'apps.videos',
+]
+
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+ROOT_URLCONF = 'config.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
+
+# ---------------------------------------------------------------------------
+# Database (SQLite for local dev — swap for Postgres in production)
+# ---------------------------------------------------------------------------
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Custom user model
+# ---------------------------------------------------------------------------
+AUTH_USER_MODEL = 'users.User'
+
+AUTH_PASSWORD_VALIDATORS = [
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator', 'OPTIONS': {'min_length': 8}},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+]
+
+# ---------------------------------------------------------------------------
+# i18n
+# ---------------------------------------------------------------------------
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'Asia/Jerusalem'
+USE_I18N = True
+USE_TZ = True
+
+STATIC_URL = 'static/'
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# Django REST Framework
+# ---------------------------------------------------------------------------
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.ScopedRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '10/min',
+        'join_group': '20/min',
+    },
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# ---------------------------------------------------------------------------
+# CORS (Angular dev server)
+# ---------------------------------------------------------------------------
+CORS_ALLOWED_ORIGINS = os.environ.get(
+    'CORS_ALLOWED_ORIGINS', 'http://localhost:4200'
+).split(',')
+CORS_ALLOW_CREDENTIALS = True
+
+
+============================================================
+FILE: .\backend\config\urls.py
+============================================================
+
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/auth/', include('apps.users.urls')),
+    path('api/groups/', include('apps.groups.urls')),
+    path('api/groups/<uuid:group_id>/videos/', include('apps.videos.urls')),
+]
+
+
+============================================================
+FILE: .\backend\config\wsgi.py
+============================================================
+
+import os
+
+from django.core.wsgi import get_wsgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+
+application = get_wsgi_application()
+
+
+============================================================
+FILE: .\backend\config\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\backend\tests\test_groups.py
+============================================================
+
+from django.contrib.auth import get_user_model
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from apps.groups.models import Group
+
+User = get_user_model()
+
+
+class GroupOwnershipTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='meir', email='meir@example.com', password='StrongPass123!')
+        self.other = User.objects.create_user(username='dana', email='dana@example.com', password='StrongPass123!')
+
+    def test_create_group_sets_owner_and_hashes_password(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post('/api/groups/', {
+            'name': 'Python Beginners',
+            'description': 'לומדים פייתון',
+            'password': 'PY123',
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        group = Group.objects.get(name='Python Beginners')
+        self.assertEqual(group.owner, self.owner)
+        self.assertNotEqual(group.password_hash, 'PY123')  # מוצפן
+        self.assertTrue(group.check_password('PY123'))
+
+    def test_non_owner_cannot_edit_group(self):
+        group = Group(owner=self.owner, name='Python Beginners', description='')
+        group.set_password('PY123')
+        group.save()
+
+        self.client.force_authenticate(self.other)
+        response = self.client.patch(f'/api/groups/{group.id}/', {'name': 'Hacked Name'})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        group.refresh_from_db()
+        self.assertEqual(group.name, 'Python Beginners')  # לא השתנה
+
+    def test_owner_can_edit_group(self):
+        group = Group(owner=self.owner, name='Python Beginners', description='')
+        group.set_password('PY123')
+        group.save()
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(f'/api/groups/{group.id}/', {'name': 'Python Advanced'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        group.refresh_from_db()
+        self.assertEqual(group.name, 'Python Advanced')
+
+    def test_non_owner_cannot_change_password(self):
+        group = Group(owner=self.owner, name='Python Beginners', description='')
+        group.set_password('PY123')
+        group.save()
+
+        self.client.force_authenticate(self.other)
+        response = self.client.patch(
+            f'/api/groups/{group.id}/change-password/', {'new_password': 'HACKED'}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_non_owner_cannot_delete_group(self):
+        group = Group(owner=self.owner, name='Python Beginners', description='')
+        group.set_password('PY123')
+        group.save()
+
+        self.client.force_authenticate(self.other)
+        response = self.client.delete(f'/api/groups/{group.id}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Group.objects.filter(id=group.id).exists())
+
+    def test_unrelated_user_cannot_view_group_detail(self):
+        """משתמש שאינו Owner ואינו Member לא אמור לראות את פרטי הקבוצה."""
+        group = Group(owner=self.owner, name='Python Beginners', description='')
+        group.set_password('PY123')
+        group.save()
+
+        self.client.force_authenticate(self.other)
+        response = self.client.get(f'/api/groups/{group.id}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+============================================================
+FILE: .\backend\tests\test_group_membership.py
+============================================================
+
+from django.contrib.auth import get_user_model
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from apps.groups.models import Group, GroupMember
+
+User = get_user_model()
+
+
+class GroupMembershipTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='meir', email='meir@example.com', password='StrongPass123!')
+        self.student = User.objects.create_user(username='dana', email='dana@example.com', password='StrongPass123!')
+
+        self.group = Group(owner=self.owner, name='Python Beginners', description='')
+        self.group.set_password('PY123')
+        self.group.save()
+
+    def test_join_group_with_correct_password_succeeds(self):
+        self.client.force_authenticate(self.student)
+        response = self.client.post('/api/groups/join/', {'password': 'PY123'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(GroupMember.objects.filter(group=self.group, user=self.student).exists())
+
+    def test_join_group_with_wrong_password_fails(self):
+        self.client.force_authenticate(self.student)
+        response = self.client.post('/api/groups/join/', {'password': 'WRONG'})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(GroupMember.objects.filter(group=self.group, user=self.student).exists())
+
+    def test_cannot_join_same_group_twice(self):
+        GroupMember.objects.create(group=self.group, user=self.student)
+        self.client.force_authenticate(self.student)
+        response = self.client.post('/api/groups/join/', {'password': 'PY123'})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(GroupMember.objects.filter(group=self.group, user=self.student).count(), 1)
+
+    def test_owner_cannot_join_own_group(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post('/api/groups/join/', {'password': 'PY123'})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_member_can_view_but_not_manage_members(self):
+        GroupMember.objects.create(group=self.group, user=self.student)
+
+        self.client.force_authenticate(self.student)
+        response = self.client.get(f'/api/groups/{self.group.id}/members/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)  # רשימת חברים = Owner בלבד
+
+    def test_owner_can_remove_member(self):
+        GroupMember.objects.create(group=self.group, user=self.student)
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.delete(f'/api/groups/{self.group.id}/members/{self.student.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(GroupMember.objects.filter(group=self.group, user=self.student).exists())
+
+    def test_non_owner_cannot_remove_member(self):
+        other_student = User.objects.create_user(username='yossi', email='yossi@example.com', password='StrongPass123!')
+        GroupMember.objects.create(group=self.group, user=self.student)
+
+        self.client.force_authenticate(other_student)
+        response = self.client.delete(f'/api/groups/{self.group.id}/members/{self.student.id}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+============================================================
+FILE: .\backend\tests\test_users.py
+============================================================
+
+from django.contrib.auth import get_user_model
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+User = get_user_model()
+
+
+class RegisterLoginTests(APITestCase):
+    def test_register_creates_user_with_hashed_password(self):
+        response = self.client.post('/api/auth/register/', {
+            'username': 'meir',
+            'email': 'meir@example.com',
+            'password': 'StrongPass123!',
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        user = User.objects.get(username='meir')
+        self.assertNotEqual(user.password, 'StrongPass123!')  # מוצפן, לא טקסט גלוי
+        self.assertTrue(user.check_password('StrongPass123!'))
+
+    def test_register_rejects_duplicate_username(self):
+        User.objects.create_user(username='meir', email='a@example.com', password='StrongPass123!')
+        response = self.client.post('/api/auth/register/', {
+            'username': 'meir',
+            'email': 'b@example.com',
+            'password': 'StrongPass123!',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_login_returns_jwt_tokens(self):
+        User.objects.create_user(username='meir', email='meir@example.com', password='StrongPass123!')
+        response = self.client.post('/api/auth/login/', {
+            'username': 'meir',
+            'password': 'StrongPass123!',
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+        self.assertIn('refresh', response.data)
+
+    def test_me_endpoint_requires_authentication(self):
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+============================================================
+FILE: .\backend\tests\test_videos.py
+============================================================
+
+from django.contrib.auth import get_user_model
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from apps.groups.models import Group, GroupMember
+from apps.videos.models import Video
+
+User = get_user_model()
+
+
+class VideoPermissionTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='meir', email='meir@example.com', password='StrongPass123!')
+        self.student = User.objects.create_user(username='dana', email='dana@example.com', password='StrongPass123!')
+        self.stranger = User.objects.create_user(username='yossi', email='yossi@example.com', password='StrongPass123!')
+
+        self.group = Group(owner=self.owner, name='Python Beginners', description='')
+        self.group.set_password('PY123')
+        self.group.save()
+
+        GroupMember.objects.create(group=self.group, user=self.student)
+
+        self.video_url = f'/api/groups/{self.group.id}/videos/'
+
+    def test_owner_can_add_video(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(self.video_url, {
+            'title': 'Python Variables',
+            'description': 'מבוא למשתנים',
+            'url': 'https://youtube.com/watch?v=abc123',
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        video = Video.objects.get(title='Python Variables')
+        self.assertEqual(video.uploader, self.owner)
+        self.assertEqual(video.group, self.group)
+
+    def test_member_cannot_add_video(self):
+        """הדרישה המפורשת: תלמיד לא יכול להוסיף סרטונים."""
+        self.client.force_authenticate(self.student)
+        response = self.client.post(self.video_url, {
+            'title': 'Hacked Video',
+            'url': 'https://youtube.com/watch?v=hack',
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Video.objects.filter(title='Hacked Video').exists())
+
+    def test_stranger_cannot_view_videos(self):
+        """משתמש שאינו Owner ואינו Member לא רואה בכלל את תוכן הקבוצה."""
+        Video.objects.create(title='Python Variables', url='https://youtube.com/watch?v=abc123',
+                              uploader=self.owner, group=self.group)
+        self.client.force_authenticate(self.stranger)
+        response = self.client.get(self.video_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_member_can_view_videos(self):
+        Video.objects.create(title='Python Variables', url='https://youtube.com/watch?v=abc123',
+                              uploader=self.owner, group=self.group)
+        self.client.force_authenticate(self.student)
+        response = self.client.get(self.video_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_member_cannot_delete_video(self):
+        video = Video.objects.create(title='Python Variables', url='https://youtube.com/watch?v=abc123',
+                                      uploader=self.owner, group=self.group)
+        self.client.force_authenticate(self.student)
+        response = self.client.delete(f'{self.video_url}{video.id}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Video.objects.filter(id=video.id).exists())
+
+    def test_member_cannot_edit_video(self):
+        video = Video.objects.create(title='Python Variables', url='https://youtube.com/watch?v=abc123',
+                                      uploader=self.owner, group=self.group)
+        self.client.force_authenticate(self.student)
+        response = self.client.patch(f'{self.video_url}{video.id}/', {'title': 'Hacked'})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        video.refresh_from_db()
+        self.assertEqual(video.title, 'Python Variables')
+
+    def test_owner_can_delete_video(self):
+        video = Video.objects.create(title='Python Variables', url='https://youtube.com/watch?v=abc123',
+                                      uploader=self.owner, group=self.group)
+        self.client.force_authenticate(self.owner)
+        response = self.client.delete(f'{self.video_url}{video.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Video.objects.filter(id=video.id).exists())
+
+
+============================================================
+FILE: .\backend\tests\__init__.py
+============================================================
+
+
+
+============================================================
+FILE: .\frontend\angular.json
+============================================================
+
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "newProjectRoot": "projects",
+  "projects": {
+    "study-groups-frontend": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": {
+          "style": "scss"
+        }
+      },
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/study-groups-frontend",
+            "index": "src/index.html",
+            "browser": "src/main.ts",
+            "polyfills": [],
+            "tsConfig": "tsconfig.app.json",
+            "assets": [
+              { "glob": "**/*", "input": "public", "output": "" }
+            ],
+            "styles": [
+              "src/styles.scss"
+            ],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                { "type": "initial", "maximumWarning": "500kb", "maximumError": "1mb" },
+                { "type": "anyComponentStyle", "maximumWarning": "4kb", "maximumError": "8kb" }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": { "buildTarget": "study-groups-frontend:build:production" },
+            "development": { "buildTarget": "study-groups-frontend:build:development" }
+          },
+          "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "tsconfig.spec.json",
+            "buildTarget": "study-groups-frontend:build",
+            "runner": "vitest"
+          }
+        }
+      }
+    }
+  }
+}
+
+
+============================================================
+FILE: .\frontend\package.json
+============================================================
+
+{
+  "name": "study-groups-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "private": true,
+  "dependencies": {
+    "@angular/common": "^21.2.0",
+    "@angular/compiler": "^21.2.0",
+    "@angular/core": "^21.2.0",
+    "@angular/forms": "^21.2.0",
+    "@angular/platform-browser": "^21.2.0",
+    "@angular/router": "^21.2.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.6.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.2.0",
+    "@angular/cli": "^21.2.0",
+    "@angular/compiler-cli": "^21.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  }
+}
+
+
+============================================================
+FILE: .\frontend\tsconfig.app.json
+============================================================
+
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app",
+    "types": []
+  },
+  "files": ["src/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}
+
+
+============================================================
+FILE: .\frontend\tsconfig.json
+============================================================
+
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc",
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "moduleResolution": "bundler",
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "dom"]
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "strictTemplates": true
+  }
+}
+
+
+============================================================
+FILE: .\frontend\tsconfig.spec.json
+============================================================
+
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/spec",
+    "types": ["vitest/globals"]
+  },
+  "include": ["src/**/*.spec.ts", "src/**/*.d.ts"]
+}
+
+
+============================================================
+FILE: .\frontend\src\index.html
+============================================================
+
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>קבוצות לימוד</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Heebo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+
+============================================================
+FILE: .\frontend\src\main.ts
+============================================================
+
+import { bootstrapApplication } from '@angular/platform-browser';
+import { AppComponent } from './app/app.component';
+import { appConfig } from './app/app.config';
+
+bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));
+
+
+============================================================
+FILE: .\frontend\src\styles.scss
+============================================================
+
+/* ==========================================================================
+   Design tokens
+   קונספט: "מחברת רישום נוכחות" — עולם בית-ספרי מודרני, לא ילדותי.
+   כרטיסי קבוצה = "כרטיסי אינדקס", רשימת חברים = "רשימת נוכחות" ממוספרת
+   (המספור כאן משמעותי — הוא סדר ההצטרפות בפועל, לא קישוט).
+   ========================================================================== */
+
+:root {
+  /* Color */
+  --color-ink: #16262b;           /* משטחים כהים: nav, hero, כותרות בולטות */
+  --color-ink-soft: #223a41;
+  --color-paper: #eee9de;         /* רקע העמוד — גריג' חמים, לא קרם קלאסי */
+  --color-surface: #ffffff;       /* כרטיסים/טפסים על גבי הנייר */
+  --color-line: #d8d0bd;          /* קווי מתאר עדינים */
+  --color-text: #1c1a16;
+  --color-text-muted: #6b6558;
+  --color-accent: #c98a2c;        /* ענבר/חרדל — סימון, הדגשה, CTA */
+  --color-accent-ink: #4a2f06;
+  --color-teal: #2f6f63;          /* ירוק-אשד — הצלחה / "מורה"/owner */
+  --color-brick: #b3492f;         /* לבנים עמומות — סכנה/מחיקה, לא אדום בוטה */
+
+  /* Type */
+  --font-display: 'Frank Ruhl Libre', 'David Libre', serif;
+  --font-body: 'Heebo', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Courier New', monospace;
+
+  /* Layout */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-card: 0 1px 2px rgba(22, 38, 43, 0.06), 0 6px 20px rgba(22, 38, 43, 0.07);
+  --max-width: 960px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+  color: var(--color-ink);
+}
+
+h1 { font-size: 2.1rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.15rem; }
+
+p { margin: 0 0 1em; }
+
+a {
+  color: var(--color-teal);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+/* visible keyboard focus everywhere — accessibility floor */
+:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ==========================================================================
+   Layout helpers
+   ========================================================================== */
+
+.page {
+  max-width: var(--max-width);
+  margin-inline: auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.page.narrow {
+  max-width: 560px;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-line);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.page-header p {
+  margin: 0.25rem 0 0;
+  color: var(--color-text-muted);
+}
+
+.section {
+  margin-bottom: 2.5rem;
+}
+
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.section-title .count {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+/* ==========================================================================
+   Cards — "index card" signature
+   ========================================================================== */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 1.25rem;
+}
+
+.index-card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 1.1rem 1.25rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow: hidden;
+}
+
+.index-card::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: var(--tab-color, var(--color-teal));
+}
+
+.index-card .tab-label {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-surface);
+  background: var(--tab-color, var(--color-teal));
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.index-card h3 {
+  margin: 0;
+}
+
+.index-card .desc {
+  color: var(--color-text-muted);
+  font-size: 0.92rem;
+  flex-grow: 1;
+}
+
+.index-card .meta {
+  display: flex;
+  gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.92rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.06s ease, filter 0.15s ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
+
+.btn-accent {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+.btn-accent:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+.btn-ghost:hover:not(:disabled) { background: rgba(22, 38, 43, 0.05); }
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--color-brick);
+  color: var(--color-brick);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(179, 73, 47, 0.08); }
+
+.btn-sm { padding: 0.35rem 0.7rem; font-size: 0.82rem; }
+
+/* ==========================================================================
+   Forms
+   ========================================================================== */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1.1rem;
+}
+
+.label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.input, textarea.input {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  width: 100%;
+}
+.input:focus { border-color: var(--color-accent); }
+.input.ng-invalid.ng-touched { border-color: var(--color-brick); }
+
+.input-mono { font-family: var(--font-mono); letter-spacing: 0.03em; }
+
+.error-text {
+  font-size: 0.8rem;
+  color: var(--color-brick);
+}
+
+.form-error-banner {
+  background: rgba(179, 73, 47, 0.08);
+  border: 1px solid rgba(179, 73, 47, 0.35);
+  color: var(--color-brick);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  margin-bottom: 1rem;
+}
+
+.form-success-banner {
+  background: rgba(47, 111, 99, 0.09);
+  border: 1px solid rgba(47, 111, 99, 0.35);
+  color: var(--color-teal);
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  margin-bottom: 1rem;
+}
+
+/* ==========================================================================
+   Badges / states
+   ========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+}
+.badge-owner { background: rgba(47, 111, 99, 0.12); color: var(--color-teal); }
+.badge-member { background: rgba(201, 138, 44, 0.14); color: var(--color-accent-ink); }
+
+.empty-state {
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-md);
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.loading-text {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+/* ==========================================================================
+   Roster — numbered attendance rows (meaningful order = join order)
+   ========================================================================== */
+
+.roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.roster-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.roster-row:last-child { border-bottom: none; }
+
+.roster-row .index {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  width: 1.6rem;
+  text-align: center;
+}
+
+.roster-row .name { font-weight: 600; flex-grow: 1; }
+.roster-row .date { font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-muted); }
+
+
+============================================================
+FILE: .\frontend\src\app\app.component.html
+============================================================
+
+@if (isLoggedIn()) {
+  <app-navbar />
+}
+<router-outlet />
+
+
+============================================================
+FILE: .\frontend\src\app\app.component.scss
+============================================================
+
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\app.component.ts
+============================================================
+
+import { Component, inject } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { AuthService } from './core/services/auth.service';
+import { NavbarComponent } from './shared/components/navbar/navbar.component';
+
+@Component({
+  selector: 'app-root',
+  imports: [RouterOutlet, NavbarComponent],
+  templateUrl: './app.component.html',
+  styleUrl: './app.component.scss',
+})
+export class AppComponent {
+  private auth = inject(AuthService);
+  isLoggedIn = this.auth.isLoggedIn;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\app.config.ts
+============================================================
+
+import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
+import { provideRouter } from '@angular/router';
+import { routes } from './app.routes';
+import { authInterceptor } from './core/interceptors/auth.interceptor';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    // Zoneless change detection הוא ברירת המחדל של הפרויקט (אין zone.js ב-polyfills) —
+    // אין צורך לקרוא ל-provideZonelessChangeDetection() בנפרד.
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(routes),
+    provideHttpClient(withFetch(), withInterceptors([authInterceptor])),
+  ],
+};
+
+
+============================================================
+FILE: .\frontend\src\app\app.routes.ts
+============================================================
+
+import { Routes } from '@angular/router';
+import { authGuard } from './core/guards/auth.guard';
+import { groupOwnerGuard } from './core/guards/group-owner.guard';
+
+export const routes: Routes = [
+  {
+    path: 'login',
+    loadComponent: () => import('./auth/login/login.component').then((m) => m.LoginComponent),
+    title: 'התחברות',
+  },
+  {
+    path: 'register',
+    loadComponent: () => import('./auth/register/register.component').then((m) => m.RegisterComponent),
+    title: 'הרשמה',
+  },
+  {
+    path: 'dashboard',
+    canActivate: [authGuard],
+    loadComponent: () => import('./dashboard/dashboard.component').then((m) => m.DashboardComponent),
+    title: 'הקבוצות שלי',
+  },
+  {
+    path: 'groups/create',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./groups/create-group/create-group.component').then((m) => m.CreateGroupComponent),
+    title: 'יצירת קבוצה',
+  },
+  {
+    path: 'groups/join',
+    canActivate: [authGuard],
+    loadComponent: () => import('./groups/join-group/join-group.component').then((m) => m.JoinGroupComponent),
+    title: 'הצטרפות לקבוצה',
+  },
+  {
+    path: 'groups/:id/manage',
+    canActivate: [authGuard, groupOwnerGuard],
+    loadComponent: () =>
+      import('./groups/group-manage/group-manage.component').then((m) => m.GroupManageComponent),
+    title: 'ניהול קבוצה',
+  },
+  {
+    path: 'groups/:id/view',
+    canActivate: [authGuard],
+    loadComponent: () => import('./groups/group-view/group-view.component').then((m) => m.GroupViewComponent),
+    title: 'צפייה בקבוצה',
+  },
+  { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
+  { path: '**', redirectTo: 'dashboard' },
+];
+
+
+============================================================
+FILE: .\frontend\src\app\auth\login\login.component.html
+============================================================
+
+<div class="auth-page">
+  <form class="card auth-card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    <div class="auth-header">
+      <span class="tab-label" style="--tab-color: var(--color-teal);">כניסה</span>
+      <h1>התחברות</h1>
+      <p>היכנס כדי לראות את הקבוצות שלך — הקבוצות שאתה מנהל, והקבוצות שהצטרפת אליהן.</p>
+    </div>
+
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="username">שם משתמש</label>
+      <input id="username" type="text" class="input" formControlName="username" autocomplete="username" />
+      @if (username.invalid && username.touched) {
+        <span class="error-text">יש להזין שם משתמש.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="password">סיסמה</label>
+      <input id="password" type="password" class="input" formControlName="password" autocomplete="current-password" />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">יש להזין סיסמה.</span>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-primary" [disabled]="isSubmitting()">
+      {{ isSubmitting() ? 'מתחבר...' : 'התחבר' }}
+    </button>
+
+    <p class="auth-footer">
+      אין לך חשבון עדיין? <a routerLink="/register">הרשמה</a>
+    </p>
+  </form>
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\auth\login\login.component.scss
+============================================================
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(201, 138, 44, 0.12), transparent 45%),
+    var(--color-ink);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 2rem 1.75rem;
+}
+
+.auth-header {
+  margin-bottom: 1.5rem;
+}
+
+.auth-header .tab-label {
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-surface);
+  background: var(--tab-color, var(--color-teal));
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  margin-bottom: 0.75rem;
+}
+
+.auth-header h1 { margin-bottom: 0.3rem; }
+.auth-header p { color: var(--color-text-muted); font-size: 0.9rem; margin: 0; }
+
+.auth-card .btn { width: 100%; margin-top: 0.25rem; }
+
+.auth-footer {
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+  margin: 1.25rem 0 0;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\auth\login\login.component.spec.ts
+============================================================
+
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter, Router } from '@angular/router';
+import { of, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LoginComponent } from './login.component';
+import { AuthService } from '../../core/services/auth.service';
+import { User } from '../../core/models/user.model';
+
+describe('LoginComponent', () => {
+  let fixture: ComponentFixture<LoginComponent>;
+  let component: LoginComponent;
+  let authServiceMock: { login: ReturnType<typeof vi.fn> };
+  let router: Router;
+
+  beforeEach(async () => {
+    authServiceMock = { login: vi.fn() };
+
+    await TestBed.configureTestingModule({
+      imports: [LoginComponent],
+      providers: [provideRouter([]), { provide: AuthService, useValue: authServiceMock }],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(LoginComponent);
+    component = fixture.componentInstance;
+    router = TestBed.inject(Router);
+    vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    fixture.detectChanges();
+  });
+
+  it('does not call the API when the form is invalid (empty fields)', () => {
+    component.onSubmit();
+    expect(authServiceMock.login).not.toHaveBeenCalled();
+    expect(component.username.touched).toBe(true);
+    expect(component.password.touched).toBe(true);
+  });
+
+  it('calls AuthService.login with the form values and navigates on success', () => {
+    const fakeUser: User = { id: 1, username: 'meir', email: 'meir@example.com', date_joined: '2026-01-01' };
+    authServiceMock.login.mockReturnValue(of(fakeUser));
+
+    component.form.setValue({ username: 'meir', password: 'StrongPass123!' });
+    component.onSubmit();
+
+    expect(authServiceMock.login).toHaveBeenCalledWith({ username: 'meir', password: 'StrongPass123!' });
+    expect(router.navigateByUrl).toHaveBeenCalledWith('/dashboard');
+    expect(component.isSubmitting()).toBe(false);
+  });
+
+  it('shows an error message when login fails', () => {
+    authServiceMock.login.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 400, error: { detail: 'שם משתמש או סיסמה שגויים.' } })),
+    );
+
+    component.form.setValue({ username: 'meir', password: 'wrong' });
+    component.onSubmit();
+
+    expect(component.errorMessage()).toBe('שם משתמש או סיסמה שגויים.');
+    expect(component.isSubmitting()).toBe(false);
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\auth\login\login.component.ts
+============================================================
+
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { AuthService } from '../../core/services/auth.service';
+import { extractErrorMessage } from '../../core/utils/error.util';
+
+@Component({
+  selector: 'app-login',
+  imports: [ReactiveFormsModule, RouterLink],
+  templateUrl: './login.component.html',
+  styleUrl: './login.component.scss',
+})
+export class LoginComponent {
+  private fb = inject(FormBuilder);
+  private auth = inject(AuthService);
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+
+  isSubmitting = signal(false);
+  errorMessage = signal<string | null>(null);
+
+  form = this.fb.nonNullable.group({
+    username: ['', [Validators.required]],
+    password: ['', [Validators.required]],
+  });
+
+  get username() { return this.form.controls.username; }
+  get password() { return this.form.controls.password; }
+
+  onSubmit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
+
+    this.auth.login(this.form.getRawValue()).subscribe({
+      next: () => {
+        this.isSubmitting.set(false);
+        const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/dashboard';
+        this.router.navigateByUrl(returnUrl);
+      },
+      error: (err) => {
+        this.isSubmitting.set(false);
+        this.errorMessage.set(extractErrorMessage(err, 'שם משתמש או סיסמה שגויים.'));
+      },
+    });
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\auth\register\register.component.html
+============================================================
+
+<div class="auth-page">
+  <form class="card auth-card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    <div class="auth-header">
+      <span class="tab-label" style="--tab-color: var(--color-accent);">חשבון חדש</span>
+      <h1>הרשמה</h1>
+      <p>חשבון אחד מספיק — תוכל גם ליצור קבוצות משלך וגם להצטרף לקבוצות של אחרים.</p>
+    </div>
+
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="username">שם משתמש</label>
+      <input id="username" type="text" class="input" formControlName="username" autocomplete="username" />
+      @if (username.invalid && username.touched) {
+        <span class="error-text">שם משתמש חייב להכיל לפחות 3 תווים.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="email">אימייל</label>
+      <input id="email" type="email" class="input" formControlName="email" autocomplete="email" />
+      @if (email.invalid && email.touched) {
+        <span class="error-text">יש להזין כתובת אימייל תקינה.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="password">סיסמה</label>
+      <input id="password" type="password" class="input" formControlName="password" autocomplete="new-password" />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">הסיסמה חייבת להכיל לפחות 8 תווים.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="confirmPassword">אימות סיסמה</label>
+      <input id="confirmPassword" type="password" class="input" formControlName="confirmPassword" autocomplete="new-password" />
+      @if (form.errors?.['passwordMismatch'] && confirmPassword.touched) {
+        <span class="error-text">הסיסמאות אינן תואמות.</span>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-primary" [disabled]="isSubmitting()">
+      {{ isSubmitting() ? 'נרשם...' : 'הרשמה' }}
+    </button>
+
+    <p class="auth-footer">
+      כבר יש לך חשבון? <a routerLink="/login">התחברות</a>
+    </p>
+  </form>
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\auth\register\register.component.scss
+============================================================
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(201, 138, 44, 0.12), transparent 45%),
+    var(--color-ink);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 2rem 1.75rem;
+}
+
+.auth-header {
+  margin-bottom: 1.5rem;
+}
+
+.auth-header .tab-label {
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-surface);
+  background: var(--tab-color, var(--color-teal));
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  margin-bottom: 0.75rem;
+}
+
+.auth-header h1 { margin-bottom: 0.3rem; }
+.auth-header p { color: var(--color-text-muted); font-size: 0.9rem; margin: 0; }
+
+.auth-card .btn { width: 100%; margin-top: 0.25rem; }
+
+.auth-footer {
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+  margin: 1.25rem 0 0;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\auth\register\register.component.ts
+============================================================
+
+import { Component, inject, signal } from '@angular/core';
+import { AbstractControl, FormBuilder, ReactiveFormsModule, ValidationErrors, Validators } from '@angular/forms';
+import { Router, RouterLink } from '@angular/router';
+import { AuthService } from '../../core/services/auth.service';
+import { extractErrorMessage } from '../../core/utils/error.util';
+
+function passwordsMatchValidator(control: AbstractControl): ValidationErrors | null {
+  const password = control.get('password')?.value;
+  const confirmPassword = control.get('confirmPassword')?.value;
+  return password && confirmPassword && password !== confirmPassword ? { passwordMismatch: true } : null;
+}
+
+@Component({
+  selector: 'app-register',
+  imports: [ReactiveFormsModule, RouterLink],
+  templateUrl: './register.component.html',
+  styleUrl: './register.component.scss',
+})
+export class RegisterComponent {
+  private fb = inject(FormBuilder);
+  private auth = inject(AuthService);
+  private router = inject(Router);
+
+  isSubmitting = signal(false);
+  errorMessage = signal<string | null>(null);
+
+  form = this.fb.nonNullable.group(
+    {
+      username: ['', [Validators.required, Validators.minLength(3)]],
+      email: ['', [Validators.required, Validators.email]],
+      password: ['', [Validators.required, Validators.minLength(8)]],
+      confirmPassword: ['', [Validators.required]],
+    },
+    { validators: passwordsMatchValidator },
+  );
+
+  get username() { return this.form.controls.username; }
+  get email() { return this.form.controls.email; }
+  get password() { return this.form.controls.password; }
+  get confirmPassword() { return this.form.controls.confirmPassword; }
+
+  onSubmit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
+
+    const { username, email, password } = this.form.getRawValue();
+
+    this.auth.register({ username, email, password }).subscribe({
+      next: () => {
+        // הרשמה הצליחה — מתחברים אוטומטית כדי לחסוך צעד נוסף מהמשתמש
+        this.auth.login({ username, password }).subscribe({
+          next: () => {
+            this.isSubmitting.set(false);
+            this.router.navigate(['/dashboard']);
+          },
+          error: () => {
+            this.isSubmitting.set(false);
+            this.router.navigate(['/login']);
+          },
+        });
+      },
+      error: (err) => {
+        this.isSubmitting.set(false);
+        this.errorMessage.set(extractErrorMessage(err, 'ההרשמה נכשלה. נסה שוב.'));
+      },
+    });
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\guards\auth.guard.spec.ts
+============================================================
+
+import { TestBed } from '@angular/core/testing';
+import { Router, UrlTree } from '@angular/router';
+import { provideRouter } from '@angular/router';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { authGuard } from './auth.guard';
+import { AuthService } from '../services/auth.service';
+
+describe('authGuard', () => {
+  let authServiceMock: { isLoggedIn: () => boolean };
+  let router: Router;
+
+  function runGuard(url = '/dashboard') {
+    return TestBed.runInInjectionContext(() =>
+      authGuard({} as never, { url } as never),
+    );
+  }
+
+  beforeEach(() => {
+    authServiceMock = { isLoggedIn: vi.fn(() => false) };
+
+    TestBed.configureTestingModule({
+      providers: [provideRouter([]), { provide: AuthService, useValue: authServiceMock }],
+    });
+    router = TestBed.inject(Router);
+  });
+
+  it('allows navigation when the user is logged in', () => {
+    authServiceMock.isLoggedIn = () => true;
+    const result = runGuard();
+    expect(result).toBe(true);
+  });
+
+  it('redirects to /login with a returnUrl when the user is logged out', () => {
+    authServiceMock.isLoggedIn = () => false;
+    const result = runGuard('/groups/123/manage') as UrlTree;
+
+    expect(result).toBeInstanceOf(UrlTree);
+    expect(router.serializeUrl(result)).toBe('/login?returnUrl=%2Fgroups%2F123%2Fmanage');
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\guards\auth.guard.ts
+============================================================
+
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../services/auth.service';
+
+export const authGuard: CanActivateFn = (_route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  if (auth.isLoggedIn()) {
+    return true;
+  }
+
+  return router.createUrlTree(['/login'], { queryParams: { returnUrl: state.url } });
+};
+
+
+============================================================
+FILE: .\frontend\src\app\core\guards\group-owner.guard.spec.ts
+============================================================
+
+import { TestBed } from '@angular/core/testing';
+import { provideRouter, Router, UrlTree, convertToParamMap } from '@angular/router';
+import { firstValueFrom, isObservable, of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { groupOwnerGuard } from './group-owner.guard';
+import { GroupService } from '../services/group.service';
+import { GroupDetail } from '../models/group.model';
+
+function makeGroup(overrides: Partial<GroupDetail> = {}): GroupDetail {
+  return {
+    id: 'group-1',
+    name: 'Python Beginners',
+    description: '',
+    owner_username: 'meir',
+    is_owner: true,
+    videos_count: 0,
+    members_count: 0,
+    created_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('groupOwnerGuard', () => {
+  let groupServiceMock: { getGroupDetail: ReturnType<typeof vi.fn> };
+  let router: Router;
+
+  async function runGuard(groupId: string | null) {
+    const route = { paramMap: convertToParamMap(groupId ? { id: groupId } : {}) };
+    const result = TestBed.runInInjectionContext(() => groupOwnerGuard(route as never, {} as never));
+    return isObservable(result) ? firstValueFrom(result) : result;
+  }
+
+  beforeEach(() => {
+    groupServiceMock = { getGroupDetail: vi.fn() };
+    TestBed.configureTestingModule({
+      providers: [provideRouter([]), { provide: GroupService, useValue: groupServiceMock }],
+    });
+    router = TestBed.inject(Router);
+  });
+
+  it('allows navigation when the current user is the group owner', async () => {
+    groupServiceMock.getGroupDetail.mockReturnValue(of(makeGroup({ is_owner: true })));
+    const result = await runGuard('group-1');
+    expect(result).toBe(true);
+  });
+
+  it('redirects to the read-only view when the user is a member but not the owner', async () => {
+    groupServiceMock.getGroupDetail.mockReturnValue(of(makeGroup({ is_owner: false })));
+    const result = (await runGuard('group-1')) as UrlTree;
+    expect(router.serializeUrl(result)).toBe('/groups/group-1/view');
+  });
+
+  it('redirects to the dashboard when the group cannot be loaded (403/404)', async () => {
+    groupServiceMock.getGroupDetail.mockReturnValue(throwError(() => new Error('forbidden')));
+    const result = (await runGuard('group-1')) as UrlTree;
+    expect(router.serializeUrl(result)).toBe('/dashboard');
+  });
+
+  it('redirects to the dashboard when there is no group id in the route', async () => {
+    const result = (await runGuard(null)) as UrlTree;
+    expect(router.serializeUrl(result)).toBe('/dashboard');
+    expect(groupServiceMock.getGroupDetail).not.toHaveBeenCalled();
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\guards\group-owner.guard.ts
+============================================================
+
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { catchError, map, of } from 'rxjs';
+import { GroupService } from '../services/group.service';
+
+/**
+ * חוסם ניווט למסך ניהול קבוצה (/groups/:id/manage) אם המשתמש אינו ה-Owner שלה.
+ * זו נוחות UX בלבד — הפניה מהירה למסך הצפייה במקום מסך שגיאה.
+ * ההגנה האמיתית תמיד בשרת (IsGroupOwner permission class ב-Django), ראו core docs.
+ */
+export const groupOwnerGuard: CanActivateFn = (route) => {
+  const groupService = inject(GroupService);
+  const router = inject(Router);
+  const groupId = route.paramMap.get('id');
+
+  if (!groupId) {
+    return router.createUrlTree(['/dashboard']);
+  }
+
+  return groupService.getGroupDetail(groupId).pipe(
+    map((group) => (group.is_owner ? true : router.createUrlTree(['/groups', groupId, 'view']))),
+    catchError(() => of(router.createUrlTree(['/dashboard']))),
+  );
+};
+
+
+============================================================
+FILE: .\frontend\src\app\core\interceptors\auth.interceptor.spec.ts
+============================================================
+
+import { HttpClient, provideHttpClient, withInterceptors } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { provideRouter, Router } from '@angular/router';
+import { of, throwError } from 'rxjs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { authInterceptor } from './auth.interceptor';
+import { AuthService } from '../services/auth.service';
+import { environment } from '../../../environments/environment';
+
+describe('authInterceptor', () => {
+  let http: HttpClient;
+  let httpMock: HttpTestingController;
+  let authServiceMock: {
+    accessToken: () => string | null;
+    getRefreshToken: () => string | null;
+    refreshAccessToken: ReturnType<typeof vi.fn>;
+    clearTokens: ReturnType<typeof vi.fn>;
+  };
+  let router: Router;
+
+  beforeEach(() => {
+    authServiceMock = {
+      accessToken: vi.fn(() => 'initial-access-token'),
+      getRefreshToken: vi.fn(() => 'refresh-token'),
+      refreshAccessToken: vi.fn(),
+      clearTokens: vi.fn(),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClientTesting(),
+        { provide: AuthService, useValue: authServiceMock },
+      ],
+    });
+
+    http = TestBed.inject(HttpClient);
+    httpMock = TestBed.inject(HttpTestingController);
+    router = TestBed.inject(Router);
+    vi.spyOn(router, 'navigate').mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it('attaches the Bearer token to outgoing API requests', () => {
+    http.get(`${environment.apiBaseUrl}/groups/my-teaching/`).subscribe();
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/groups/my-teaching/`);
+    expect(req.request.headers.get('Authorization')).toBe('Bearer initial-access-token');
+    req.flush([]);
+  });
+
+  it('does not attach a token to the login endpoint', () => {
+    http.post(`${environment.apiBaseUrl}/auth/login/`, {}).subscribe();
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/auth/login/`);
+    expect(req.request.headers.has('Authorization')).toBe(false);
+    req.flush({});
+  });
+
+  it('on 401, refreshes the token once and retries the original request', () => {
+    authServiceMock.refreshAccessToken.mockReturnValue(of({ access: 'new-access-token' }));
+
+    let finalResult: unknown;
+    http.get(`${environment.apiBaseUrl}/groups/my-teaching/`).subscribe((res) => (finalResult = res));
+
+    const firstReq = httpMock.expectOne(`${environment.apiBaseUrl}/groups/my-teaching/`);
+    expect(firstReq.request.headers.get('Authorization')).toBe('Bearer initial-access-token');
+    firstReq.flush({ detail: 'Token expired' }, { status: 401, statusText: 'Unauthorized' });
+
+    expect(authServiceMock.refreshAccessToken).toHaveBeenCalled();
+
+    const retriedReq = httpMock.expectOne(`${environment.apiBaseUrl}/groups/my-teaching/`);
+    expect(retriedReq.request.headers.get('Authorization')).toBe('Bearer new-access-token');
+    retriedReq.flush([{ id: 'group-1' }]);
+
+    expect(finalResult).toEqual([{ id: 'group-1' }]);
+  });
+
+  it('logs out and redirects to /login when the refresh itself fails', () => {
+    authServiceMock.refreshAccessToken.mockReturnValue(throwError(() => new Error('refresh failed')));
+
+    let sawError = false;
+    http.get(`${environment.apiBaseUrl}/groups/my-teaching/`).subscribe({
+      error: () => (sawError = true),
+    });
+
+    const firstReq = httpMock.expectOne(`${environment.apiBaseUrl}/groups/my-teaching/`);
+    firstReq.flush({ detail: 'Token expired' }, { status: 401, statusText: 'Unauthorized' });
+
+    expect(sawError).toBe(true);
+    expect(authServiceMock.clearTokens).toHaveBeenCalled();
+    expect(router.navigate).toHaveBeenCalledWith(['/login']);
+  });
+
+  it('does not attempt a refresh when there is no refresh token available', () => {
+    authServiceMock.getRefreshToken = vi.fn(() => null);
+
+    let sawError = false;
+    http.get(`${environment.apiBaseUrl}/groups/my-teaching/`).subscribe({
+      error: () => (sawError = true),
+    });
+
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/groups/my-teaching/`);
+    req.flush({ detail: 'Token expired' }, { status: 401, statusText: 'Unauthorized' });
+
+    expect(sawError).toBe(true);
+    expect(authServiceMock.refreshAccessToken).not.toHaveBeenCalled();
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\interceptors\auth.interceptor.ts
+============================================================
+
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { Router } from '@angular/router';
+import { catchError, switchMap, throwError } from 'rxjs';
+import { AuthService } from '../services/auth.service';
+import { environment } from '../../../environments/environment';
+
+/**
+ * מצרף "Authorization: Bearer <token>" לכל בקשה יוצאת אל ה-API שלנו.
+ * אם השרת מחזיר 401 (access token פג תוקף) — מנסה לרענן פעם אחת עם ה-refresh token,
+ * ואם זה מצליח שולח מחדש את הבקשה המקורית עם הטוקן החדש.
+ * אם הרענון נכשל — מתנתק ומפנה למסך ההתחברות.
+ */
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  const isApiRequest = req.url.startsWith(environment.apiBaseUrl);
+  const isAuthEndpoint = req.url.includes('/auth/login/') || req.url.includes('/auth/register/') || req.url.includes('/auth/refresh/');
+
+  const token = auth.accessToken();
+  const authorizedReq = token && isApiRequest && !isAuthEndpoint
+    ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } })
+    : req;
+
+  return next(authorizedReq).pipe(
+    catchError((error: unknown) => {
+      const shouldTryRefresh =
+        error instanceof HttpErrorResponse &&
+        error.status === 401 &&
+        isApiRequest &&
+        !isAuthEndpoint &&
+        auth.getRefreshToken() !== null;
+
+      if (!shouldTryRefresh) {
+        return throwError(() => error);
+      }
+
+      return auth.refreshAccessToken().pipe(
+        switchMap((res) => {
+          const retriedReq = req.clone({ setHeaders: { Authorization: `Bearer ${res.access}` } });
+          return next(retriedReq);
+        }),
+        catchError((refreshError) => {
+          auth.clearTokens();
+          router.navigate(['/login']);
+          return throwError(() => refreshError);
+        }),
+      );
+    }),
+  );
+};
+
+
+============================================================
+FILE: .\frontend\src\app\core\models\auth.model.ts
+============================================================
+
+export interface AuthTokens {
+  access: string;
+  refresh: string;
+}
+
+export interface RegisterPayload {
+  username: string;
+  email: string;
+  password: string;
+}
+
+export interface LoginPayload {
+  username: string;
+  password: string;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\models\group.model.ts
+============================================================
+
+import { User } from './user.model';
+
+/** GET /api/groups/my-teaching/ , /api/groups/my-student/ */
+export interface GroupSummary {
+  id: string;
+  name: string;
+  description: string;
+  videos_count: number;
+  members_count: number;
+  created_at: string;
+}
+
+/** GET /api/groups/{id}/ , POST /api/groups/join/ */
+export interface GroupDetail {
+  id: string;
+  name: string;
+  description: string;
+  owner_username: string;
+  is_owner: boolean;
+  videos_count: number;
+  members_count: number;
+  created_at: string;
+}
+
+export interface CreateGroupPayload {
+  name: string;
+  description: string;
+  password: string;
+}
+
+/** תגובת POST /api/groups/  — GroupCreateSerializer */
+export interface CreateGroupResponse {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface UpdateGroupPayload {
+  name?: string;
+  description?: string;
+}
+
+export interface ChangeGroupPasswordPayload {
+  new_password: string;
+}
+
+/** GET /api/groups/{id}/members/  — GroupMemberSerializer */
+export interface GroupMember {
+  id: number;
+  user: User;
+  joined_at: string;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\models\user.model.ts
+============================================================
+
+export interface User {
+  id: number;
+  username: string;
+  email: string;
+  date_joined: string;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\models\video.model.ts
+============================================================
+
+export interface Video {
+  id: number;
+  title: string;
+  description: string;
+  url: string;
+  created_at: string;
+  uploader_username: string;
+  group: string;
+}
+
+export interface CreateVideoPayload {
+  title: string;
+  description: string;
+  url: string;
+}
+
+export interface UpdateVideoPayload {
+  title?: string;
+  description?: string;
+  url?: string;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\auth.service.spec.ts
+============================================================
+
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { AuthService } from './auth.service';
+import { environment } from '../../../environments/environment';
+
+describe('AuthService', () => {
+  let service: AuthService;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    localStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    service = TestBed.inject(AuthService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    localStorage.clear();
+  });
+
+  it('starts logged out when there is no stored token', () => {
+    expect(service.isLoggedIn()).toBe(false);
+    expect(service.accessToken()).toBeNull();
+  });
+
+  it('login() stores tokens and then loads the current user', () => {
+    let result: unknown;
+    service.login({ username: 'meir', password: 'StrongPass123!' }).subscribe((user) => (result = user));
+
+    const loginReq = httpMock.expectOne(`${environment.apiBaseUrl}/auth/login/`);
+    expect(loginReq.request.method).toBe('POST');
+    loginReq.flush({ access: 'access-token', refresh: 'refresh-token' });
+
+    expect(service.isLoggedIn()).toBe(true);
+    expect(service.accessToken()).toBe('access-token');
+    expect(localStorage.getItem('sg_access_token')).toBe('access-token');
+
+    const meReq = httpMock.expectOne(`${environment.apiBaseUrl}/auth/me/`);
+    expect(meReq.request.method).toBe('GET');
+    meReq.flush({ id: 1, username: 'meir', email: 'meir@example.com', date_joined: '2026-01-01' });
+
+    expect(service.currentUser()?.username).toBe('meir');
+    expect(result).toEqual(expect.objectContaining({ username: 'meir' }));
+  });
+
+  it('register() posts to /auth/register/ without touching tokens', () => {
+    service.register({ username: 'dana', email: 'dana@example.com', password: 'StrongPass123!' }).subscribe();
+
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/auth/register/`);
+    expect(req.request.method).toBe('POST');
+    req.flush({ id: 2, username: 'dana', email: 'dana@example.com' });
+
+    expect(service.isLoggedIn()).toBe(false);
+  });
+
+  it('logout() clears local tokens even if the server call is in flight', () => {
+    service.setTokens({ access: 'a', refresh: 'r' });
+    expect(service.isLoggedIn()).toBe(true);
+
+    service.logout();
+
+    // הניקוי המקומי קורה מיד ("best effort" מול השרת)
+    expect(service.isLoggedIn()).toBe(false);
+    expect(localStorage.getItem('sg_access_token')).toBeNull();
+
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/auth/logout/`);
+    req.flush({}, { status: 205, statusText: 'Reset Content' });
+  });
+
+  it('refreshAccessToken() updates the stored access token', () => {
+    service.setTokens({ access: 'old-access', refresh: 'refresh-token' });
+
+    let newAccess: string | undefined;
+    service.refreshAccessToken().subscribe((res) => (newAccess = res.access));
+
+    const req = httpMock.expectOne(`${environment.apiBaseUrl}/auth/refresh/`);
+    expect(req.request.body).toEqual({ refresh: 'refresh-token' });
+    req.flush({ access: 'new-access' });
+
+    expect(newAccess).toBe('new-access');
+    expect(service.accessToken()).toBe('new-access');
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\auth.service.ts
+============================================================
+
+import { HttpClient } from '@angular/common/http';
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { Observable, switchMap, tap } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import { AuthTokens, LoginPayload, RegisterPayload } from '../models/auth.model';
+import { User } from '../models/user.model';
+
+const ACCESS_KEY = 'sg_access_token';
+const REFRESH_KEY = 'sg_refresh_token';
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private http = inject(HttpClient);
+  private baseUrl = environment.apiBaseUrl;
+
+  // --- state as signals -----------------------------------------------
+  private _accessToken = signal<string | null>(localStorage.getItem(ACCESS_KEY));
+  private _refreshToken = signal<string | null>(localStorage.getItem(REFRESH_KEY));
+  private _currentUser = signal<User | null>(null);
+
+  readonly accessToken = this._accessToken.asReadonly();
+  readonly currentUser = this._currentUser.asReadonly();
+  readonly isLoggedIn = computed(() => this._accessToken() !== null);
+
+  constructor() {
+    // רענון עמוד (F5): הטוקן כבר קיים ב-localStorage, אבל currentUser עוד ריק בזיכרון.
+    // טוענים אותו מיד כדי שה-UI (למשל שם המשתמש ב-navbar) יתעדכן.
+    // אם הטוקן פג תוקף, ה-interceptor כבר ידאג לרענון או להתנתקות אוטומטית.
+    if (this._accessToken()) {
+      this.loadCurrentUser().subscribe({ error: () => undefined });
+    }
+  }
+
+  // --- auth flows --------------------------------------------------------
+
+  register(payload: RegisterPayload): Observable<User> {
+    return this.http.post<User>(`${this.baseUrl}/auth/register/`, payload);
+  }
+
+  /** מתחבר, שומר את הטוקנים, ואז טוען את פרטי המשתמש המחובר (/auth/me/). */
+  login(payload: LoginPayload): Observable<User> {
+    return this.http.post<AuthTokens>(`${this.baseUrl}/auth/login/`, payload).pipe(
+      tap((tokens) => this.setTokens(tokens)),
+      switchMap(() => this.loadCurrentUser()),
+    );
+  }
+
+  loadCurrentUser(): Observable<User> {
+    return this.http.get<User>(`${this.baseUrl}/auth/me/`).pipe(
+      tap((user) => this._currentUser.set(user)),
+    );
+  }
+
+  refreshAccessToken(): Observable<{ access: string }> {
+    const refresh = this._refreshToken();
+    return this.http.post<{ access: string }>(`${this.baseUrl}/auth/refresh/`, { refresh }).pipe(
+      tap((res) => {
+        this._accessToken.set(res.access);
+        localStorage.setItem(ACCESS_KEY, res.access);
+      }),
+    );
+  }
+
+  logout(): void {
+    const refresh = this._refreshToken();
+    if (refresh) {
+      // best-effort: מבקשים מהשרת להכניס את ה-refresh token ל-blacklist.
+      // לא ממתינים לתשובה — הניקוי המקומי קורה מיד בכל מקרה.
+      this.http.post(`${this.baseUrl}/auth/logout/`, { refresh }).subscribe({
+        error: () => undefined,
+      });
+    }
+    this.clearTokens();
+  }
+
+  getRefreshToken(): string | null {
+    return this._refreshToken();
+  }
+
+  setTokens(tokens: AuthTokens): void {
+    this._accessToken.set(tokens.access);
+    this._refreshToken.set(tokens.refresh);
+    localStorage.setItem(ACCESS_KEY, tokens.access);
+    localStorage.setItem(REFRESH_KEY, tokens.refresh);
+  }
+
+  clearTokens(): void {
+    this._accessToken.set(null);
+    this._refreshToken.set(null);
+    this._currentUser.set(null);
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\group.service.spec.ts
+============================================================
+
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { GroupService } from './group.service';
+import { environment } from '../../../environments/environment';
+
+describe('GroupService', () => {
+  let service: GroupService;
+  let httpMock: HttpTestingController;
+  const base = environment.apiBaseUrl;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    service = TestBed.inject(GroupService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('createGroup() POSTs to /groups/ with name, description and password', () => {
+    service.createGroup({ name: 'Python Beginners', description: 'desc', password: 'PY123' }).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ name: 'Python Beginners', description: 'desc', password: 'PY123' });
+    req.flush({ id: 'group-1', name: 'Python Beginners', description: 'desc', created_at: '2026-01-01' });
+  });
+
+  it('joinGroup() POSTs only the password to /groups/join/', () => {
+    service.joinGroup('PY123').subscribe();
+    const req = httpMock.expectOne(`${base}/groups/join/`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ password: 'PY123' });
+    req.flush({ id: 'group-1' });
+  });
+
+  it('updateGroup() sends a PATCH with only the changed fields', () => {
+    service.updateGroup('group-1', { name: 'New Name' }).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/`);
+    expect(req.request.method).toBe('PATCH');
+    expect(req.request.body).toEqual({ name: 'New Name' });
+    req.flush({ name: 'New Name' });
+  });
+
+  it('deleteGroup() sends a DELETE to the group detail endpoint', () => {
+    service.deleteGroup('group-1').subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/`);
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('changeGroupPassword() PATCHes the change-password endpoint', () => {
+    service.changeGroupPassword('group-1', { new_password: 'NEW123' }).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/change-password/`);
+    expect(req.request.method).toBe('PATCH');
+    expect(req.request.body).toEqual({ new_password: 'NEW123' });
+    req.flush({ detail: 'סיסמת הקבוצה עודכנה בהצלחה.' });
+  });
+
+  it('removeMember() sends a DELETE to /groups/{id}/members/{userId}/', () => {
+    service.removeMember('group-1', 42).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/members/42/`);
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('getGroupDetail() sends a GET to /groups/{id}/', () => {
+    service.getGroupDetail('group-1').subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/`);
+    expect(req.request.method).toBe('GET');
+    req.flush({ id: 'group-1', is_owner: true });
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\group.service.ts
+============================================================
+
+import { HttpClient, httpResource } from '@angular/common/http';
+import { Injectable, Signal, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import {
+  ChangeGroupPasswordPayload,
+  CreateGroupPayload,
+  CreateGroupResponse,
+  GroupDetail,
+  GroupMember,
+  GroupSummary,
+  UpdateGroupPayload,
+} from '../models/group.model';
+
+@Injectable({ providedIn: 'root' })
+export class GroupService {
+  private http = inject(HttpClient);
+  private baseUrl = environment.apiBaseUrl;
+
+  // --- Dashboard: reactive signal-based resources (Angular 21 httpResource) ---
+
+  /** GET /api/groups/my-teaching/ — signal-based, כולל value()/isLoading()/error() אוטומטית. */
+  myTeachingGroups() {
+    return httpResource<GroupSummary[]>(() => `${this.baseUrl}/groups/my-teaching/`, {
+      defaultValue: [],
+    });
+  }
+
+  /** GET /api/groups/my-student/ */
+  myStudentGroups() {
+    return httpResource<GroupSummary[]>(() => `${this.baseUrl}/groups/my-student/`, {
+      defaultValue: [],
+    });
+  }
+
+  /** מקור ריאקטיבי לפרטי קבוצה בודדת, תלוי ב-signal של group id (יכול להשתנות עם ניווט). */
+  groupDetailResource(groupId: Signal<string | undefined>) {
+    return httpResource<GroupDetail | undefined>(() => {
+      const id = groupId();
+      return id ? `${this.baseUrl}/groups/${id}/` : undefined;
+    });
+  }
+
+  membersResource(groupId: Signal<string | undefined>) {
+    return httpResource<GroupMember[]>(
+      () => {
+        const id = groupId();
+        return id ? `${this.baseUrl}/groups/${id}/members/` : undefined;
+      },
+      { defaultValue: [] },
+    );
+  }
+
+  // --- Mutations (Observable-based actions) -----------------------------
+
+  getGroupDetail(groupId: string): Observable<GroupDetail> {
+    return this.http.get<GroupDetail>(`${this.baseUrl}/groups/${groupId}/`);
+  }
+
+  createGroup(payload: CreateGroupPayload): Observable<CreateGroupResponse> {
+    return this.http.post<CreateGroupResponse>(`${this.baseUrl}/groups/`, payload);
+  }
+
+  updateGroup(groupId: string, payload: UpdateGroupPayload): Observable<UpdateGroupPayload> {
+    return this.http.patch<UpdateGroupPayload>(`${this.baseUrl}/groups/${groupId}/`, payload);
+  }
+
+  deleteGroup(groupId: string): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/groups/${groupId}/`);
+  }
+
+  changeGroupPassword(groupId: string, payload: ChangeGroupPasswordPayload): Observable<{ detail: string }> {
+    return this.http.patch<{ detail: string }>(`${this.baseUrl}/groups/${groupId}/change-password/`, payload);
+  }
+
+  joinGroup(password: string): Observable<GroupDetail> {
+    return this.http.post<GroupDetail>(`${this.baseUrl}/groups/join/`, { password });
+  }
+
+  removeMember(groupId: string, userId: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/groups/${groupId}/members/${userId}/`);
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\video.service.spec.ts
+============================================================
+
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { VideoService } from './video.service';
+import { environment } from '../../../environments/environment';
+
+describe('VideoService', () => {
+  let service: VideoService;
+  let httpMock: HttpTestingController;
+  const base = environment.apiBaseUrl;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    service = TestBed.inject(VideoService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('addVideo() POSTs to /groups/{groupId}/videos/', () => {
+    service.addVideo('group-1', { title: 'Python Variables', description: '', url: 'https://youtube.com/watch?v=abc' }).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/videos/`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ title: 'Python Variables', description: '', url: 'https://youtube.com/watch?v=abc' });
+    req.flush({ id: 1, title: 'Python Variables' });
+  });
+
+  it('updateVideo() PATCHes /groups/{groupId}/videos/{id}/', () => {
+    service.updateVideo('group-1', 7, { title: 'Updated title' }).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/videos/7/`);
+    expect(req.request.method).toBe('PATCH');
+    expect(req.request.body).toEqual({ title: 'Updated title' });
+    req.flush({ id: 7, title: 'Updated title' });
+  });
+
+  it('deleteVideo() sends a DELETE to /groups/{groupId}/videos/{id}/', () => {
+    service.deleteVideo('group-1', 7).subscribe();
+    const req = httpMock.expectOne(`${base}/groups/group-1/videos/7/`);
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\services\video.service.ts
+============================================================
+
+import { HttpClient, httpResource } from '@angular/common/http';
+import { Injectable, Signal, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import { CreateVideoPayload, UpdateVideoPayload, Video } from '../models/video.model';
+
+@Injectable({ providedIn: 'root' })
+export class VideoService {
+  private http = inject(HttpClient);
+  private baseUrl = environment.apiBaseUrl;
+
+  /** מקור ריאקטיבי: רשימת הסרטונים של קבוצה, נטען מחדש אוטומטית כש-groupId משתנה. */
+  videosResource(groupId: Signal<string | undefined>) {
+    return httpResource<Video[]>(
+      () => {
+        const id = groupId();
+        return id ? `${this.baseUrl}/groups/${id}/videos/` : undefined;
+      },
+      { defaultValue: [] },
+    );
+  }
+
+  addVideo(groupId: string, payload: CreateVideoPayload): Observable<Video> {
+    return this.http.post<Video>(`${this.baseUrl}/groups/${groupId}/videos/`, payload);
+  }
+
+  updateVideo(groupId: string, videoId: number, payload: UpdateVideoPayload): Observable<Video> {
+    return this.http.patch<Video>(`${this.baseUrl}/groups/${groupId}/videos/${videoId}/`, payload);
+  }
+
+  deleteVideo(groupId: string, videoId: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/groups/${groupId}/videos/${videoId}/`);
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\utils\error.util.spec.ts
+============================================================
+
+import { describe, expect, it } from 'vitest';
+import { HttpErrorResponse } from '@angular/common/http';
+import { extractErrorMessage } from './error.util';
+
+describe('extractErrorMessage', () => {
+  it('returns a connection message for status 0 (server unreachable)', () => {
+    const error = new HttpErrorResponse({ status: 0 });
+    expect(extractErrorMessage(error)).toBe('לא ניתן להתחבר לשרת. ודא שה-Backend פעיל.');
+  });
+
+  it('extracts a top-level "detail" message', () => {
+    const error = new HttpErrorResponse({ status: 403, error: { detail: 'רק בעל הקבוצה רשאי לבצע פעולה זו.' } });
+    expect(extractErrorMessage(error)).toBe('רק בעל הקבוצה רשאי לבצע פעולה זו.');
+  });
+
+  it('extracts the first message from a field-specific validation error array', () => {
+    const error = new HttpErrorResponse({ status: 400, error: { username: ['שם המשתמש כבר תפוס.'] } });
+    expect(extractErrorMessage(error)).toBe('שם המשתמש כבר תפוס.');
+  });
+
+  it('falls back to the provided default when the shape is unrecognized', () => {
+    const error = new HttpErrorResponse({ status: 500, error: {} });
+    expect(extractErrorMessage(error, 'ברירת מחדל')).toBe('ברירת מחדל');
+  });
+
+  it('falls back to the default for non-HttpErrorResponse values', () => {
+    expect(extractErrorMessage(new Error('generic'), 'ברירת מחדל')).toBe('ברירת מחדל');
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\utils\error.util.ts
+============================================================
+
+import { HttpErrorResponse } from '@angular/common/http';
+
+/**
+ * DRF מחזיר שגיאות בכמה צורות אפשריות:
+ *  - { detail: "הודעה" }                          (permission denied / not found / throttled)
+ *  - { field_name: ["הודעה1", "הודעה2"] }          (ValidationError על שדה ספציפי)
+ *  - { non_field_errors: ["הודעה"] }               (ValidationError כללי)
+ * הפונקציה הזו ממירה כל אחת מהצורות להודעת טקסט אחת קריאה למשתמש.
+ */
+export function extractErrorMessage(error: unknown, fallback = 'אירעה שגיאה. נסה שוב.'): string {
+  if (!(error instanceof HttpErrorResponse)) {
+    return fallback;
+  }
+
+  if (error.status === 0) {
+    return 'לא ניתן להתחבר לשרת. ודא שה-Backend פעיל.';
+  }
+
+  const body = error.error;
+
+  if (typeof body === 'string') {
+    return body;
+  }
+
+  if (body && typeof body === 'object') {
+    if (typeof body.detail === 'string') {
+      return body.detail;
+    }
+
+    const firstKey = Object.keys(body)[0];
+    if (firstKey) {
+      const value = body[firstKey];
+      const message = Array.isArray(value) ? value[0] : value;
+      if (typeof message === 'string') {
+        return message;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\core\utils\youtube.util.spec.ts
+============================================================
+
+import { describe, expect, it } from 'vitest';
+import { toYouTubeEmbedUrl } from './youtube.util';
+
+describe('toYouTubeEmbedUrl', () => {
+  it('converts a standard watch URL', () => {
+    expect(toYouTubeEmbedUrl('https://www.youtube.com/watch?v=abc123')).toBe(
+      'https://www.youtube.com/embed/abc123',
+    );
+  });
+
+  it('converts a shortened youtu.be URL', () => {
+    expect(toYouTubeEmbedUrl('https://youtu.be/abc123')).toBe('https://www.youtube.com/embed/abc123');
+  });
+
+  it('converts a Shorts URL', () => {
+    expect(toYouTubeEmbedUrl('https://www.youtube.com/shorts/abc123')).toBe(
+      'https://www.youtube.com/embed/abc123',
+    );
+  });
+
+  it('passes through an already-embedded URL', () => {
+    expect(toYouTubeEmbedUrl('https://www.youtube.com/embed/abc123')).toBe(
+      'https://www.youtube.com/embed/abc123',
+    );
+  });
+
+  it('strips extra query params after the video id', () => {
+    expect(toYouTubeEmbedUrl('https://www.youtube.com/watch?v=abc123&t=30s')).toBe(
+      'https://www.youtube.com/embed/abc123',
+    );
+  });
+
+  it('returns null for a non-YouTube URL', () => {
+    expect(toYouTubeEmbedUrl('https://vimeo.com/123456')).toBeNull();
+  });
+
+  it('returns null for a malformed URL instead of throwing', () => {
+    expect(toYouTubeEmbedUrl('not-a-url')).toBeNull();
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\core\utils\youtube.util.ts
+============================================================
+
+/**
+ * מזהה קישורי YouTube נפוצים (watch?v=, youtu.be/, shorts/, embed/) ומחזיר כתובת embed.
+ * אם ה-URL אינו מזוהה כ-YouTube — מחזיר null, וה-UI יציג קישור פתיחה רגיל במקום נגן מוטמע.
+ */
+export function toYouTubeEmbedUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '');
+
+    let videoId: string | null = null;
+
+    if (host === 'youtu.be') {
+      videoId = parsed.pathname.slice(1);
+    } else if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (parsed.pathname === '/watch') {
+        videoId = parsed.searchParams.get('v');
+      } else if (parsed.pathname.startsWith('/shorts/')) {
+        videoId = parsed.pathname.split('/')[2];
+      } else if (parsed.pathname.startsWith('/embed/')) {
+        videoId = parsed.pathname.split('/')[2];
+      }
+    }
+
+    if (!videoId) return null;
+
+    videoId = videoId.split('&')[0].split('?')[0];
+    return `https://www.youtube.com/embed/${videoId}`;
+  } catch {
+    return null;
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\dashboard\dashboard.component.html
+============================================================
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1>הקבוצות שלי</h1>
+      <p>קבוצות שאתה מנהל וקבוצות שהצטרפת אליהן — הכל במקום אחד.</p>
+    </div>
+    <div class="header-actions">
+      <a routerLink="/groups/join" class="btn btn-ghost">הצטרפות לקבוצה</a>
+      <a routerLink="/groups/create" class="btn btn-accent">קבוצה חדשה</a>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section-title">
+      <h2>קבוצות שאני מנהל</h2>
+      <span class="count">{{ teaching.value().length }}</span>
+    </div>
+
+    @if (teaching.isLoading()) {
+      <p class="loading-text">טוען...</p>
+    } @else if (teaching.error()) {
+      <div class="form-error-banner">לא ניתן לטעון את הקבוצות. נסה לרענן את הדף.</div>
+    } @else if (teaching.value().length === 0) {
+      <div class="empty-state">
+        <p>עדיין לא יצרת קבוצות.</p>
+        <a routerLink="/groups/create" class="btn btn-accent btn-sm">יצירת קבוצה ראשונה</a>
+      </div>
+    } @else {
+      <div class="grid">
+        @for (group of teaching.value(); track group.id) {
+          <article class="index-card" style="--tab-color: var(--color-teal);">
+            <span class="tab-label">מנהל/ת</span>
+            <h3>{{ group.name }}</h3>
+            <p class="desc">{{ group.description || 'ללא תיאור' }}</p>
+            <div class="meta">
+              <span>{{ group.videos_count }} סרטונים</span>
+              <span>{{ group.members_count }} תלמידים</span>
+            </div>
+            <a [routerLink]="['/groups', group.id, 'manage']" class="btn btn-primary btn-sm">ניהול</a>
+          </article>
+        }
+      </div>
+    }
+  </section>
+
+  <section class="section">
+    <div class="section-title">
+      <h2>קבוצות שהצטרפתי אליהן</h2>
+      <span class="count">{{ student.value().length }}</span>
+    </div>
+
+    @if (student.isLoading()) {
+      <p class="loading-text">טוען...</p>
+    } @else if (student.error()) {
+      <div class="form-error-banner">לא ניתן לטעון את הקבוצות. נסה לרענן את הדף.</div>
+    } @else if (student.value().length === 0) {
+      <div class="empty-state">
+        <p>עדיין לא הצטרפת לקבוצות.</p>
+        <a routerLink="/groups/join" class="btn btn-ghost btn-sm">הצטרפות לקבוצה</a>
+      </div>
+    } @else {
+      <div class="grid">
+        @for (group of student.value(); track group.id) {
+          <article class="index-card" style="--tab-color: var(--color-accent);">
+            <span class="tab-label">חבר/ה</span>
+            <h3>{{ group.name }}</h3>
+            <p class="desc">{{ group.description || 'ללא תיאור' }}</p>
+            <div class="meta">
+              <span>{{ group.videos_count }} סרטונים</span>
+            </div>
+            <a [routerLink]="['/groups', group.id, 'view']" class="btn btn-ghost btn-sm">צפייה</a>
+          </article>
+        }
+      </div>
+    }
+  </section>
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\dashboard\dashboard.component.scss
+============================================================
+
+.header-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+@media (max-width: 480px) {
+  .header-actions {
+    width: 100%;
+  }
+  .header-actions .btn {
+    flex: 1;
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\dashboard\dashboard.component.ts
+============================================================
+
+import { Component, inject } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { GroupService } from '../core/services/group.service';
+
+@Component({
+  selector: 'app-dashboard',
+  imports: [RouterLink],
+  templateUrl: './dashboard.component.html',
+  styleUrl: './dashboard.component.scss',
+})
+export class DashboardComponent {
+  private groupService = inject(GroupService);
+
+  teaching = this.groupService.myTeachingGroups();
+  student = this.groupService.myStudentGroups();
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\create-group\create-group.component.html
+============================================================
+
+<div class="page narrow">
+  <div class="page-header">
+    <div>
+      <h1>יצירת קבוצה</h1>
+      <p>אתה תהיה ה-Owner של הקבוצה — רק אתה תוכל לנהל אותה, להוסיף סרטונים ולנהל תלמידים.</p>
+    </div>
+  </div>
+
+  <form class="card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="name">שם הקבוצה</label>
+      <input id="name" type="text" class="input" formControlName="name" placeholder="לדוגמה: Python Beginners" />
+      @if (name.invalid && name.touched) {
+        <span class="error-text">שם הקבוצה חייב להכיל לפחות 2 תווים.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="description">תיאור</label>
+      <textarea id="description" class="input" formControlName="description" rows="3"
+        placeholder="במה עוסקת הקבוצה?"></textarea>
+    </div>
+
+    <div class="field">
+      <label class="label" for="password">סיסמת הקבוצה</label>
+      <input id="password" type="text" class="input input-mono" formControlName="password"
+        placeholder="לדוגמה: PY123" />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">סיסמת הקבוצה חייבת להכיל לפחות 4 תווים.</span>
+      }
+      <span class="hint">שתף את הסיסמה הזו עם מי שתרצה שיצטרף לקבוצה כתלמיד.</span>
+    </div>
+
+    <div class="form-actions">
+      <a routerLink="/dashboard" class="btn btn-ghost">ביטול</a>
+      <button type="submit" class="btn btn-accent" [disabled]="isSubmitting()">
+        {{ isSubmitting() ? 'יוצר...' : 'יצירת קבוצה' }}
+      </button>
+    </div>
+  </form>
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\groups\create-group\create-group.component.scss
+============================================================
+
+:host {
+  display: block;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\create-group\create-group.component.ts
+============================================================
+
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router, RouterLink } from '@angular/router';
+import { GroupService } from '../../core/services/group.service';
+import { extractErrorMessage } from '../../core/utils/error.util';
+
+@Component({
+  selector: 'app-create-group',
+  imports: [ReactiveFormsModule, RouterLink],
+  templateUrl: './create-group.component.html',
+  styleUrl: './create-group.component.scss',
+})
+export class CreateGroupComponent {
+  private fb = inject(FormBuilder);
+  private groupService = inject(GroupService);
+  private router = inject(Router);
+
+  isSubmitting = signal(false);
+  errorMessage = signal<string | null>(null);
+
+  form = this.fb.nonNullable.group({
+    name: ['', [Validators.required, Validators.minLength(2)]],
+    description: [''],
+    password: ['', [Validators.required, Validators.minLength(4)]],
+  });
+
+  get name() { return this.form.controls.name; }
+  get password() { return this.form.controls.password; }
+
+  onSubmit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
+
+    this.groupService.createGroup(this.form.getRawValue()).subscribe({
+      next: (group) => {
+        this.isSubmitting.set(false);
+        this.router.navigate(['/groups', group.id, 'manage']);
+      },
+      error: (err) => {
+        this.isSubmitting.set(false);
+        this.errorMessage.set(extractErrorMessage(err, 'לא ניתן היה ליצור את הקבוצה.'));
+      },
+    });
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-manage\group-manage.component.html
+============================================================
+
+<div class="page">
+  @if (group.isLoading()) {
+    <p class="loading-text">טוען...</p>
+  } @else if (group.error()) {
+    <div class="form-error-banner">לא ניתן לטעון את הקבוצה. ייתכן שאין לך הרשאה, או שהיא נמחקה.</div>
+  } @else if (group.value(); as g) {
+    <div class="page-header">
+      @if (!isEditingDetails()) {
+        <div>
+          <span class="badge badge-owner">Owner</span>
+          <h1>{{ g.name }}</h1>
+          <p>{{ g.description || 'ללא תיאור' }}</p>
+        </div>
+        <div class="header-actions">
+          <button type="button" class="btn btn-ghost" (click)="startEditDetails()">עריכת פרטים</button>
+          <a [routerLink]="['/groups', g.id, 'view']" class="btn btn-ghost">תצוגת תלמיד</a>
+        </div>
+      } @else {
+        <form class="edit-details-form" (ngSubmit)="saveDetails()" [formGroup]="detailsForm" novalidate>
+          @if (detailsError(); as msg) {
+            <div class="form-error-banner">{{ msg }}</div>
+          }
+          <div class="field">
+            <label class="label" for="edit-name">שם הקבוצה</label>
+            <input id="edit-name" type="text" class="input" formControlName="name" />
+          </div>
+          <div class="field">
+            <label class="label" for="edit-description">תיאור</label>
+            <textarea id="edit-description" class="input" formControlName="description" rows="2"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" (click)="cancelEditDetails()">ביטול</button>
+            <button type="submit" class="btn btn-accent" [disabled]="isSavingDetails()">
+              {{ isSavingDetails() ? 'שומר...' : 'שמירה' }}
+            </button>
+          </div>
+        </form>
+      }
+    </div>
+
+    <div class="meta-row">
+      <span>{{ g.videos_count }} סרטונים</span>
+      <span>{{ g.members_count }} תלמידים</span>
+      <span>נוצרה ב-{{ g.created_at | date: 'dd/MM/yyyy' }}</span>
+    </div>
+
+    <!-- סרטונים -->
+    <section class="section">
+      <div class="section-title">
+        <h2>סרטונים</h2>
+        <span class="count">{{ videos.value().length }}</span>
+      </div>
+
+      @if (!isVideoFormOpen()) {
+        <button type="button" class="btn btn-accent btn-sm add-video-btn" (click)="openAddVideo()">
+          + הוספת סרטון
+        </button>
+      } @else {
+        <app-video-form
+          [videoToEdit]="videoBeingEdited()"
+          [isSaving]="isSavingVideo()"
+          [errorMessage]="videoFormError()"
+          (save)="saveVideo($event)"
+          (cancel)="closeVideoForm()"
+        />
+      }
+
+      @if (videos.isLoading()) {
+        <p class="loading-text">טוען סרטונים...</p>
+      } @else {
+        <app-video-list
+          [videos]="videos.value()"
+          [canManage]="true"
+          (edit)="openEditVideo($event)"
+          (delete)="deleteVideo($event)"
+        />
+      }
+    </section>
+
+    <!-- תלמידים -->
+    <section class="section">
+      <div class="section-title">
+        <h2>תלמידים</h2>
+        <span class="count">{{ members.value().length }}</span>
+      </div>
+
+      @if (membersError(); as msg) {
+        <div class="form-error-banner">{{ msg }}</div>
+      }
+
+      @if (members.isLoading()) {
+        <p class="loading-text">טוען...</p>
+      } @else if (members.value().length === 0) {
+        <div class="empty-state">
+          <p>עדיין אין תלמידים בקבוצה. שתף את סיסמת הקבוצה כדי שיוכלו להצטרף.</p>
+        </div>
+      } @else {
+        <ol class="roster">
+          @for (member of members.value(); track member.id; let i = $index) {
+            <li class="roster-row">
+              <span class="index">{{ i + 1 }}</span>
+              <span class="name">{{ member.user.username }}</span>
+              <span class="date">הצטרף/ה ב-{{ member.joined_at | date: 'dd/MM/yyyy' }}</span>
+              <button type="button" class="btn btn-danger btn-sm" (click)="removeMember(member)">הסרה</button>
+            </li>
+          }
+        </ol>
+      }
+    </section>
+
+    <!-- הגדרות מתקדמות -->
+    <section class="section">
+      <div class="section-title">
+        <h2>הגדרות קבוצה</h2>
+      </div>
+
+      <div class="card danger-zone">
+        @if (!isChangingPassword()) {
+          <div class="danger-row">
+            <div>
+              <h3>סיסמת הקבוצה</h3>
+              <p>שינוי הסיסמה ימנע מתלמידים חדשים להצטרף עם הסיסמה הישנה.</p>
+            </div>
+            <button type="button" class="btn btn-ghost" (click)="isChangingPassword.set(true)">שינוי סיסמה</button>
+          </div>
+        } @else {
+          <form (ngSubmit)="savePassword()" [formGroup]="passwordForm" novalidate class="password-form">
+            @if (passwordError(); as msg) {
+              <div class="form-error-banner">{{ msg }}</div>
+            }
+            <div class="field">
+              <label class="label" for="new-password">סיסמה חדשה</label>
+              <input id="new-password" type="text" class="input input-mono" formControlName="new_password" />
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-ghost" (click)="isChangingPassword.set(false)">ביטול</button>
+              <button type="submit" class="btn btn-accent" [disabled]="isSavingPassword()">
+                {{ isSavingPassword() ? 'שומר...' : 'עדכון סיסמה' }}
+              </button>
+            </div>
+          </form>
+        }
+        @if (passwordSuccess(); as msg) {
+          <div class="form-success-banner">{{ msg }}</div>
+        }
+      </div>
+
+      <div class="card danger-zone danger-zone--delete">
+        <div class="danger-row">
+          <div>
+            <h3>מחיקת קבוצה</h3>
+            <p>פעולה בלתי הפיכה — כל הסרטונים והחברויות בקבוצה יימחקו לצמיתות.</p>
+          </div>
+          <button type="button" class="btn btn-danger" (click)="deleteGroup()">מחיקת קבוצה</button>
+        </div>
+        @if (deleteGroupError(); as msg) {
+          <div class="form-error-banner">{{ msg }}</div>
+        }
+      </div>
+    </section>
+  }
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-manage\group-manage.component.scss
+============================================================
+
+.header-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-self: flex-start;
+}
+
+.edit-details-form {
+  width: 100%;
+  max-width: 480px;
+}
+
+.meta-row {
+  display: flex;
+  gap: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: -0.75rem 0 1.75rem;
+}
+
+.add-video-btn {
+  margin-bottom: 1rem;
+}
+
+.danger-zone {
+  margin-bottom: 1rem;
+}
+
+.danger-zone--delete {
+  border-color: rgba(179, 73, 47, 0.35);
+}
+
+.danger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.danger-row h3 { margin-bottom: 0.2rem; }
+.danger-row p { margin: 0; color: var(--color-text-muted); font-size: 0.86rem; }
+
+.password-form {
+  max-width: 320px;
+}
+
+.roster-row {
+  justify-content: space-between;
+}
+
+@media (max-width: 560px) {
+  .danger-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-manage\group-manage.component.ts
+============================================================
+
+import { Component, inject, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { DatePipe } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { map } from 'rxjs';
+import { GroupService } from '../../core/services/group.service';
+import { VideoService } from '../../core/services/video.service';
+import { GroupMember } from '../../core/models/group.model';
+import { CreateVideoPayload, UpdateVideoPayload, Video } from '../../core/models/video.model';
+import { extractErrorMessage } from '../../core/utils/error.util';
+import { VideoListComponent } from '../../videos/video-list/video-list.component';
+import { VideoFormComponent } from '../../videos/video-form/video-form.component';
+
+@Component({
+  selector: 'app-group-manage',
+  imports: [ReactiveFormsModule, RouterLink, DatePipe, VideoListComponent, VideoFormComponent],
+  templateUrl: './group-manage.component.html',
+  styleUrl: './group-manage.component.scss',
+})
+export class GroupManageComponent {
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+  private fb = inject(FormBuilder);
+  private groupService = inject(GroupService);
+  private videoService = inject(VideoService);
+
+  groupId = toSignal(this.route.paramMap.pipe(map((params) => params.get('id') ?? undefined)));
+
+  group = this.groupService.groupDetailResource(this.groupId);
+  videos = this.videoService.videosResource(this.groupId);
+  members = this.groupService.membersResource(this.groupId);
+
+  // --- edit group details ---
+  isEditingDetails = signal(false);
+  detailsForm = this.fb.nonNullable.group({
+    name: ['', [Validators.required, Validators.minLength(2)]],
+    description: [''],
+  });
+  detailsError = signal<string | null>(null);
+  isSavingDetails = signal(false);
+
+  startEditDetails(): void {
+    const g = this.group.value();
+    if (!g) return;
+    this.detailsForm.setValue({ name: g.name, description: g.description });
+    this.detailsError.set(null);
+    this.isEditingDetails.set(true);
+  }
+
+  cancelEditDetails(): void {
+    this.isEditingDetails.set(false);
+  }
+
+  saveDetails(): void {
+    const id = this.groupId();
+    if (!id || this.detailsForm.invalid) {
+      this.detailsForm.markAllAsTouched();
+      return;
+    }
+    this.isSavingDetails.set(true);
+    this.detailsError.set(null);
+    this.groupService.updateGroup(id, this.detailsForm.getRawValue()).subscribe({
+      next: () => {
+        this.isSavingDetails.set(false);
+        this.isEditingDetails.set(false);
+        this.group.reload();
+      },
+      error: (err) => {
+        this.isSavingDetails.set(false);
+        this.detailsError.set(extractErrorMessage(err, 'לא ניתן היה לשמור את השינויים.'));
+      },
+    });
+  }
+
+  // --- change password ---
+  isChangingPassword = signal(false);
+  passwordForm = this.fb.nonNullable.group({
+    new_password: ['', [Validators.required, Validators.minLength(4)]],
+  });
+  passwordError = signal<string | null>(null);
+  passwordSuccess = signal<string | null>(null);
+  isSavingPassword = signal(false);
+
+  savePassword(): void {
+    const id = this.groupId();
+    if (!id || this.passwordForm.invalid) {
+      this.passwordForm.markAllAsTouched();
+      return;
+    }
+    this.isSavingPassword.set(true);
+    this.passwordError.set(null);
+    this.passwordSuccess.set(null);
+    this.groupService.changeGroupPassword(id, this.passwordForm.getRawValue()).subscribe({
+      next: (res) => {
+        this.isSavingPassword.set(false);
+        this.passwordSuccess.set(res.detail);
+        this.passwordForm.reset({ new_password: '' });
+        this.isChangingPassword.set(false);
+      },
+      error: (err) => {
+        this.isSavingPassword.set(false);
+        this.passwordError.set(extractErrorMessage(err, 'לא ניתן היה לשנות את הסיסמה.'));
+      },
+    });
+  }
+
+  // --- videos ---
+  isVideoFormOpen = signal(false);
+  videoBeingEdited = signal<Video | null>(null);
+  videoFormError = signal<string | null>(null);
+  isSavingVideo = signal(false);
+
+  openAddVideo(): void {
+    this.videoBeingEdited.set(null);
+    this.videoFormError.set(null);
+    this.isVideoFormOpen.set(true);
+  }
+
+  openEditVideo(video: Video): void {
+    this.videoBeingEdited.set(video);
+    this.videoFormError.set(null);
+    this.isVideoFormOpen.set(true);
+  }
+
+  closeVideoForm(): void {
+    this.isVideoFormOpen.set(false);
+    this.videoBeingEdited.set(null);
+  }
+
+  saveVideo(payload: CreateVideoPayload | UpdateVideoPayload): void {
+    const id = this.groupId();
+    if (!id) return;
+    this.isSavingVideo.set(true);
+    this.videoFormError.set(null);
+
+    const editing = this.videoBeingEdited();
+    const request = editing
+      ? this.videoService.updateVideo(id, editing.id, payload)
+      : this.videoService.addVideo(id, payload as CreateVideoPayload);
+
+    request.subscribe({
+      next: () => {
+        this.isSavingVideo.set(false);
+        this.closeVideoForm();
+        this.videos.reload();
+        this.group.reload();
+      },
+      error: (err) => {
+        this.isSavingVideo.set(false);
+        this.videoFormError.set(extractErrorMessage(err, 'לא ניתן היה לשמור את הסרטון.'));
+      },
+    });
+  }
+
+  deleteVideo(video: Video): void {
+    const id = this.groupId();
+    if (!id) return;
+    if (!confirm(`למחוק את הסרטון "${video.title}"? הפעולה בלתי הפיכה.`)) return;
+
+    this.videoService.deleteVideo(id, video.id).subscribe({
+      next: () => {
+        this.videos.reload();
+        this.group.reload();
+      },
+      error: (err) => alert(extractErrorMessage(err, 'לא ניתן היה למחוק את הסרטון.')),
+    });
+  }
+
+  // --- members ---
+  membersError = signal<string | null>(null);
+
+  removeMember(member: GroupMember): void {
+    const id = this.groupId();
+    if (!id) return;
+    if (!confirm(`להסיר את ${member.user.username} מהקבוצה?`)) return;
+
+    this.groupService.removeMember(id, member.user.id).subscribe({
+      next: () => {
+        this.members.reload();
+        this.group.reload();
+      },
+      error: (err) => this.membersError.set(extractErrorMessage(err, 'לא ניתן היה להסיר את התלמיד.')),
+    });
+  }
+
+  // --- delete group ---
+  deleteGroupError = signal<string | null>(null);
+
+  deleteGroup(): void {
+    const id = this.groupId();
+    const g = this.group.value();
+    if (!id || !g) return;
+    if (!confirm(`למחוק את הקבוצה "${g.name}" לצמיתות? כל הסרטונים והחברויות יימחקו.`)) return;
+
+    this.groupService.deleteGroup(id).subscribe({
+      next: () => this.router.navigate(['/dashboard']),
+      error: (err) => this.deleteGroupError.set(extractErrorMessage(err, 'לא ניתן היה למחוק את הקבוצה.')),
+    });
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-view\group-view.component.html
+============================================================
+
+<div class="page">
+  @if (group.isLoading()) {
+    <p class="loading-text">טוען...</p>
+  } @else if (group.error()) {
+    <div class="form-error-banner">לא ניתן לטעון את הקבוצה. ייתכן שאין לך גישה אליה.</div>
+  } @else if (group.value(); as g) {
+    <div class="page-header">
+      <div>
+        <span class="badge badge-member">חבר/ה</span>
+        <h1>{{ g.name }}</h1>
+        <p>{{ g.description || 'ללא תיאור' }}</p>
+      </div>
+    </div>
+
+    <div class="meta-row">
+      <span>{{ g.videos_count }} סרטונים</span>
+      <span>מנחה: {{ g.owner_username }}</span>
+      <span>הצטרפת ב-{{ g.created_at | date: 'dd/MM/yyyy' }}</span>
+    </div>
+
+    <section class="section">
+      <div class="section-title">
+        <h2>סרטונים</h2>
+        <span class="count">{{ videos.value().length }}</span>
+      </div>
+
+      @if (videos.isLoading()) {
+        <p class="loading-text">טוען סרטונים...</p>
+      } @else {
+        <app-video-list [videos]="videos.value()" [canManage]="false" />
+      }
+    </section>
+  }
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-view\group-view.component.scss
+============================================================
+
+.meta-row {
+  display: flex;
+  gap: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: -0.75rem 0 1.75rem;
+  flex-wrap: wrap;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\group-view\group-view.component.ts
+============================================================
+
+import { Component, inject } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute } from '@angular/router';
+import { map } from 'rxjs';
+import { GroupService } from '../../core/services/group.service';
+import { VideoService } from '../../core/services/video.service';
+import { VideoListComponent } from '../../videos/video-list/video-list.component';
+
+@Component({
+  selector: 'app-group-view',
+  imports: [DatePipe, VideoListComponent],
+  templateUrl: './group-view.component.html',
+  styleUrl: './group-view.component.scss',
+})
+export class GroupViewComponent {
+  private route = inject(ActivatedRoute);
+  private groupService = inject(GroupService);
+  private videoService = inject(VideoService);
+
+  groupId = toSignal(this.route.paramMap.pipe(map((params) => params.get('id') ?? undefined)));
+
+  group = this.groupService.groupDetailResource(this.groupId);
+  videos = this.videoService.videosResource(this.groupId);
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\join-group\join-group.component.html
+============================================================
+
+<div class="page narrow">
+  <div class="page-header">
+    <div>
+      <h1>הצטרפות לקבוצה</h1>
+      <p>קיבלת סיסמה ממורה או מאחראי קבוצה? הזן אותה כאן כדי להצטרף ולצפות בתוכן.</p>
+    </div>
+  </div>
+
+  <form class="card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="password">סיסמת הקבוצה</label>
+      <input id="password" type="text" class="input input-mono" formControlName="password"
+        placeholder="לדוגמה: PY123" autofocus />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">יש להזין סיסמה.</span>
+      }
+    </div>
+
+    <div class="form-actions">
+      <a routerLink="/dashboard" class="btn btn-ghost">ביטול</a>
+      <button type="submit" class="btn btn-accent" [disabled]="isSubmitting()">
+        {{ isSubmitting() ? 'מצטרף...' : 'הצטרפות' }}
+      </button>
+    </div>
+  </form>
+</div>
+
+
+============================================================
+FILE: .\frontend\src\app\groups\join-group\join-group.component.scss
+============================================================
+
+:host {
+  display: block;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\groups\join-group\join-group.component.ts
+============================================================
+
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router, RouterLink } from '@angular/router';
+import { GroupService } from '../../core/services/group.service';
+import { extractErrorMessage } from '../../core/utils/error.util';
+
+@Component({
+  selector: 'app-join-group',
+  imports: [ReactiveFormsModule, RouterLink],
+  templateUrl: './join-group.component.html',
+  styleUrl: './join-group.component.scss',
+})
+export class JoinGroupComponent {
+  private fb = inject(FormBuilder);
+  private groupService = inject(GroupService);
+  private router = inject(Router);
+
+  isSubmitting = signal(false);
+  errorMessage = signal<string | null>(null);
+
+  form = this.fb.nonNullable.group({
+    password: ['', [Validators.required]],
+  });
+
+  get password() { return this.form.controls.password; }
+
+  onSubmit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.isSubmitting.set(true);
+    this.errorMessage.set(null);
+
+    this.groupService.joinGroup(this.form.getRawValue().password).subscribe({
+      next: (group) => {
+        this.isSubmitting.set(false);
+        this.router.navigate(['/groups', group.id, 'view']);
+      },
+      error: (err) => {
+        this.isSubmitting.set(false);
+        this.errorMessage.set(extractErrorMessage(err, 'סיסמה שגויה.'));
+      },
+    });
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\shared\components\navbar\navbar.component.html
+============================================================
+
+<header class="navbar">
+  <a routerLink="/dashboard" class="brand">
+    <span class="brand-mark">01</span>
+    קבוצות לימוד
+  </a>
+
+  <nav class="links">
+    <a routerLink="/dashboard" routerLinkActive="active">הקבוצות שלי</a>
+    <a routerLink="/groups/create" routerLinkActive="active">קבוצה חדשה</a>
+    <a routerLink="/groups/join" routerLinkActive="active">הצטרפות</a>
+  </nav>
+
+  <div class="user">
+    @if (currentUser(); as user) {
+      <span class="username">{{ user.username }}</span>
+    }
+    <button type="button" class="btn btn-ghost btn-sm" (click)="onLogout()">התנתקות</button>
+  </div>
+</header>
+
+
+============================================================
+FILE: .\frontend\src\app\shared\components\navbar\navbar.component.scss
+============================================================
+
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.9rem 1.5rem;
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--color-paper) !important;
+  text-decoration: none !important;
+}
+
+.brand-mark {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+.links {
+  display: flex;
+  gap: 1.25rem;
+  flex-grow: 1;
+}
+
+.links a {
+  color: rgba(238, 233, 222, 0.75) !important;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none !important;
+  padding-bottom: 0.2rem;
+  border-bottom: 2px solid transparent;
+}
+
+.links a:hover,
+.links a.active {
+  color: var(--color-paper) !important;
+  border-bottom-color: var(--color-accent);
+}
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.username {
+  font-size: 0.88rem;
+  color: rgba(238, 233, 222, 0.85);
+}
+
+.navbar .btn-ghost {
+  border-color: rgba(238, 233, 222, 0.3);
+  color: var(--color-paper);
+}
+.navbar .btn-ghost:hover {
+  background: rgba(238, 233, 222, 0.1);
+}
+
+@media (max-width: 640px) {
+  .navbar {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .links {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\shared\components\navbar\navbar.component.ts
+============================================================
+
+import { Component, inject } from '@angular/core';
+import { Router, RouterLink } from '@angular/router';
+import { AuthService } from '../../../core/services/auth.service';
+
+@Component({
+  selector: 'app-navbar',
+  imports: [RouterLink],
+  templateUrl: './navbar.component.html',
+  styleUrl: './navbar.component.scss',
+})
+export class NavbarComponent {
+  private auth = inject(AuthService);
+  private router = inject(Router);
+
+  currentUser = this.auth.currentUser;
+
+  onLogout(): void {
+    this.auth.logout();
+    this.router.navigate(['/login']);
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-form\video-form.component.html
+============================================================
+
+<form class="video-form" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+  <h3>{{ videoToEdit() ? 'עריכת סרטון' : 'הוספת סרטון' }}</h3>
+
+  @if (errorMessage(); as msg) {
+    <div class="form-error-banner" role="alert">{{ msg }}</div>
+  }
+
+  <div class="field">
+    <label class="label" for="video-title">כותרת</label>
+    <input id="video-title" type="text" class="input" formControlName="title" placeholder="לדוגמה: Python Variables" />
+    @if (title.invalid && title.touched) {
+      <span class="error-text">יש להזין כותרת.</span>
+    }
+  </div>
+
+  <div class="field">
+    <label class="label" for="video-description">תיאור</label>
+    <textarea id="video-description" class="input" formControlName="description" rows="2"
+      placeholder="תיאור קצר (אופציונלי)"></textarea>
+  </div>
+
+  <div class="field">
+    <label class="label" for="video-url">קישור לסרטון</label>
+    <input id="video-url" type="url" class="input input-mono" formControlName="url"
+      placeholder="https://youtube.com/watch?v=..." />
+    @if (url.invalid && url.touched) {
+      <span class="error-text">יש להזין קישור תקין (החל ב-http:// או https://).</span>
+    }
+  </div>
+
+  <div class="form-actions">
+    <button type="button" class="btn btn-ghost" (click)="onCancel()">ביטול</button>
+    <button type="submit" class="btn btn-accent" [disabled]="isSaving()">
+      {{ isSaving() ? 'שומר...' : (videoToEdit() ? 'שמירת שינויים' : 'הוספת סרטון') }}
+    </button>
+  </div>
+</form>
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-form\video-form.component.scss
+============================================================
+
+.video-form {
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.video-form h3 {
+  margin-bottom: 1rem;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-form\video-form.component.ts
+============================================================
+
+import { Component, effect, inject, input, output } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { CreateVideoPayload, UpdateVideoPayload, Video } from '../../core/models/video.model';
+
+@Component({
+  selector: 'app-video-form',
+  imports: [ReactiveFormsModule],
+  templateUrl: './video-form.component.html',
+  styleUrl: './video-form.component.scss',
+})
+export class VideoFormComponent {
+  private fb = inject(FormBuilder);
+
+  /** אם קיים — הטופס במצב עריכה. אם ריק/undefined — מצב הוספה. */
+  videoToEdit = input<Video | null>(null);
+  isSaving = input(false);
+  errorMessage = input<string | null>(null);
+
+  save = output<CreateVideoPayload | UpdateVideoPayload>();
+  cancel = output<void>();
+
+  form = this.fb.nonNullable.group({
+    title: ['', [Validators.required, Validators.minLength(1)]],
+    description: [''],
+    url: ['', [Validators.required, Validators.pattern(/^https?:\/\/.+/)]],
+  });
+
+  constructor() {
+    // כשה-input videoToEdit משתנה (למשל: לוחצים "עריכה" על סרטון אחר), ממלאים את הטופס מחדש.
+    effect(() => {
+      const video = this.videoToEdit();
+      if (video) {
+        this.form.setValue({
+          title: video.title,
+          description: video.description,
+          url: video.url,
+        });
+      } else {
+        this.form.reset({ title: '', description: '', url: '' });
+      }
+    });
+  }
+
+  get title() { return this.form.controls.title; }
+  get url() { return this.form.controls.url; }
+
+  onSubmit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.save.emit(this.form.getRawValue());
+  }
+
+  onCancel(): void {
+    this.cancel.emit();
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-list\video-list.component.html
+============================================================
+
+@if (videos().length === 0) {
+  <div class="empty-state">
+    <p>{{ canManage() ? 'עדיין לא הוספת סרטונים לקבוצה.' : 'עדיין אין סרטונים בקבוצה זו.' }}</p>
+  </div>
+} @else {
+  <ul class="video-list">
+    @for (video of videos(); track video.id) {
+      <li class="video-item" [class.expanded]="isExpanded(video)" data-testid="video-row">
+        <div
+          class="video-row"
+          role="button"
+          tabindex="0"
+          (click)="toggle(video)"
+          (keydown.enter)="toggle(video)"
+          (keydown.space)="toggle(video); $event.preventDefault()"
+        >
+          <span class="play-icon" aria-hidden="true">{{ isExpanded(video) ? '▾' : '▸' }}</span>
+          <span class="video-title">{{ video.title }}</span>
+          <span class="video-meta">הועלה ע"י {{ video.uploader_username }}</span>
+
+          @if (canManage()) {
+            <span class="video-actions">
+              <button type="button" class="btn btn-ghost btn-sm" data-testid="edit-video" (click)="onEdit($event, video)">עריכה</button>
+              <button type="button" class="btn btn-danger btn-sm" data-testid="delete-video" (click)="onDelete($event, video)">מחיקה</button>
+            </span>
+          }
+        </div>
+
+        @if (isExpanded(video)) {
+          <div class="video-expanded">
+            @if (video.description) {
+              <p class="video-description">{{ video.description }}</p>
+            }
+            <app-video-player [video]="video" />
+          </div>
+        }
+      </li>
+    }
+  </ul>
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-list\video-list.component.scss
+============================================================
+
+.video-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.video-item {
+  border-bottom: 1px solid var(--color-line);
+}
+.video-item:last-child { border-bottom: none; }
+
+.video-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: start;
+  font-family: var(--font-body);
+  color: var(--color-text);
+}
+.video-row:hover { background: rgba(22, 38, 43, 0.03); }
+.video-row:focus-visible { outline: 3px solid var(--color-accent); outline-offset: -2px; }
+
+.play-icon {
+  color: var(--color-accent);
+  font-size: 0.9rem;
+  width: 1rem;
+}
+
+.video-title {
+  font-weight: 600;
+  flex-grow: 1;
+}
+
+.video-meta {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+}
+
+.video-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.video-expanded {
+  padding: 0 1rem 1.1rem;
+}
+
+.video-description {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-list\video-list.component.spec.ts
+============================================================
+
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { VideoListComponent } from './video-list.component';
+import { Video } from '../../core/models/video.model';
+
+const sampleVideos: Video[] = [
+  {
+    id: 1,
+    title: 'Python Variables',
+    description: 'מבוא למשתנים',
+    url: 'https://www.youtube.com/watch?v=abc123',
+    created_at: '2026-01-01T00:00:00Z',
+    uploader_username: 'meir',
+    group: 'group-1',
+  },
+  {
+    id: 2,
+    title: 'Python Functions',
+    description: '',
+    url: 'https://www.youtube.com/watch?v=def456',
+    created_at: '2026-01-02T00:00:00Z',
+    uploader_username: 'meir',
+    group: 'group-1',
+  },
+];
+
+describe('VideoListComponent', () => {
+  let fixture: ComponentFixture<VideoListComponent>;
+  let component: VideoListComponent;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [VideoListComponent],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(VideoListComponent);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('videos', sampleVideos);
+    fixture.detectChanges();
+  });
+
+  it('renders one row per video', () => {
+    const rows = fixture.nativeElement.querySelectorAll('[data-testid="video-row"]');
+    expect(rows.length).toBe(2);
+  });
+
+  it('does not show manage actions by default (canManage=false)', () => {
+    const editButtons = fixture.nativeElement.querySelectorAll('[data-testid="edit-video"]');
+    expect(editButtons.length).toBe(0);
+  });
+
+  it('shows edit/delete actions when canManage=true, and emits on click', () => {
+    fixture.componentRef.setInput('canManage', true);
+    fixture.detectChanges();
+
+    let emittedVideo: Video | undefined;
+    component.edit.subscribe((v) => (emittedVideo = v));
+
+    const editButton: HTMLButtonElement = fixture.nativeElement.querySelector('[data-testid="edit-video"]');
+    expect(editButton).toBeTruthy();
+    editButton.click();
+
+    expect(emittedVideo?.id).toBe(1);
+  });
+
+  it('toggles expanded state when a video row is clicked', () => {
+    expect(component.isExpanded(sampleVideos[0])).toBe(false);
+    component.toggle(sampleVideos[0]);
+    expect(component.isExpanded(sampleVideos[0])).toBe(true);
+    component.toggle(sampleVideos[0]);
+    expect(component.isExpanded(sampleVideos[0])).toBe(false);
+  });
+});
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-list\video-list.component.ts
+============================================================
+
+import { Component, input, output, signal } from '@angular/core';
+import { Video } from '../../core/models/video.model';
+import { VideoPlayerComponent } from '../video-player/video-player.component';
+
+@Component({
+  selector: 'app-video-list',
+  imports: [VideoPlayerComponent],
+  templateUrl: './video-list.component.html',
+  styleUrl: './video-list.component.scss',
+})
+export class VideoListComponent {
+  videos = input.required<Video[]>();
+  /** true במסך הניהול (Owner) — מציג כפתורי עריכה/מחיקה. false במסך הצפייה (Member). */
+  canManage = input(false);
+
+  edit = output<Video>();
+  delete = output<Video>();
+
+  private _expandedId = signal<number | null>(null);
+
+  isExpanded(video: Video): boolean {
+    return this._expandedId() === video.id;
+  }
+
+  toggle(video: Video): void {
+    this._expandedId.set(this.isExpanded(video) ? null : video.id);
+  }
+
+  onEdit(event: Event, video: Video): void {
+    event.stopPropagation();
+    this.edit.emit(video);
+  }
+
+  onDelete(event: Event, video: Video): void {
+    event.stopPropagation();
+    this.delete.emit(video);
+  }
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-player\video-player.component.html
+============================================================
+
+@if (embedUrl(); as src) {
+  <div class="player-frame">
+    <iframe
+      [src]="src"
+      title="נגן וידאו: {{ video().title }}"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+      allowfullscreen
+    ></iframe>
+  </div>
+} @else {
+  <div class="player-fallback">
+    <p>לא ניתן להטמיע את הסרטון הזה בעמוד.</p>
+    <a [href]="video().url" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+      פתיחת הסרטון בכרטיסייה חדשה
+    </a>
+  </div>
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-player\video-player.component.scss
+============================================================
+
+.player-frame {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 */
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-ink);
+}
+
+.player-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.player-fallback {
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+
+============================================================
+FILE: .\frontend\src\app\videos\video-player\video-player.component.ts
+============================================================
+
+import { Component, computed, input } from '@angular/core';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { inject } from '@angular/core';
+import { Video } from '../../core/models/video.model';
+import { toYouTubeEmbedUrl } from '../../core/utils/youtube.util';
+
+@Component({
+  selector: 'app-video-player',
+  imports: [],
+  templateUrl: './video-player.component.html',
+  styleUrl: './video-player.component.scss',
+})
+export class VideoPlayerComponent {
+  private sanitizer = inject(DomSanitizer);
+
+  video = input.required<Video>();
+
+  embedUrl = computed<SafeResourceUrl | null>(() => {
+    const raw = toYouTubeEmbedUrl(this.video().url);
+    return raw ? this.sanitizer.bypassSecurityTrustResourceUrl(raw) : null;
+  });
+}
+
+
+============================================================
+FILE: .\frontend\src\environments\environment.development.ts
+============================================================
+
+export const environment = {
+  production: false,
+  apiBaseUrl: 'http://localhost:8000/api',
+};
+
+
+============================================================
+FILE: .\frontend\src\environments\environment.ts
+============================================================
+
+export const environment = {
+  production: true,
+  apiBaseUrl: '/api',
+};
+

@@ -1,0 +1,17 @@
+@if (embedUrl(); as src) {
+  <div class="player-frame">
+    <iframe
+      [src]="src"
+      title="נגן וידאו: {{ video().title }}"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+      allowfullscreen
+    ></iframe>
+  </div>
+} @else {
+  <div class="player-fallback">
+    <p>לא ניתן להטמיע את הסרטון הזה בעמוד.</p>
+    <a [href]="video().url" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+      פתיחת הסרטון בכרטיסייה חדשה
+    </a>
+  </div>
+}

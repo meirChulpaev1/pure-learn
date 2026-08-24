@@ -1,0 +1,30 @@
+<div class="page narrow">
+  <div class="page-header">
+    <div>
+      <h1>הצטרפות לקבוצה</h1>
+      <p>קיבלת סיסמה ממורה או מאחראי קבוצה? הזן אותה כאן כדי להצטרף ולצפות בתוכן.</p>
+    </div>
+  </div>
+
+  <form class="card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="password">סיסמת הקבוצה</label>
+      <input id="password" type="text" class="input input-mono" formControlName="password"
+        placeholder="לדוגמה: PY123" autofocus />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">יש להזין סיסמה.</span>
+      }
+    </div>
+
+    <div class="form-actions">
+      <a routerLink="/dashboard" class="btn btn-ghost">ביטול</a>
+      <button type="submit" class="btn btn-accent" [disabled]="isSubmitting()">
+        {{ isSubmitting() ? 'מצטרף...' : 'הצטרפות' }}
+      </button>
+    </div>
+  </form>
+</div>

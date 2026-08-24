@@ -1,0 +1,162 @@
+<div class="page">
+  @if (group.isLoading()) {
+    <p class="loading-text">טוען...</p>
+  } @else if (group.error()) {
+    <div class="form-error-banner">לא ניתן לטעון את הקבוצה. ייתכן שאין לך הרשאה, או שהיא נמחקה.</div>
+  } @else if (group.value(); as g) {
+    <div class="page-header">
+      @if (!isEditingDetails()) {
+        <div>
+          <span class="badge badge-owner">Owner</span>
+          <h1>{{ g.name }}</h1>
+          <p>{{ g.description || 'ללא תיאור' }}</p>
+        </div>
+        <div class="header-actions">
+          <button type="button" class="btn btn-ghost" (click)="startEditDetails()">עריכת פרטים</button>
+          <a [routerLink]="['/groups', g.id, 'view']" class="btn btn-ghost">תצוגת תלמיד</a>
+        </div>
+      } @else {
+        <form class="edit-details-form" (ngSubmit)="saveDetails()" [formGroup]="detailsForm" novalidate>
+          @if (detailsError(); as msg) {
+            <div class="form-error-banner">{{ msg }}</div>
+          }
+          <div class="field">
+            <label class="label" for="edit-name">שם הקבוצה</label>
+            <input id="edit-name" type="text" class="input" formControlName="name" />
+          </div>
+          <div class="field">
+            <label class="label" for="edit-description">תיאור</label>
+            <textarea id="edit-description" class="input" formControlName="description" rows="2"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" (click)="cancelEditDetails()">ביטול</button>
+            <button type="submit" class="btn btn-accent" [disabled]="isSavingDetails()">
+              {{ isSavingDetails() ? 'שומר...' : 'שמירה' }}
+            </button>
+          </div>
+        </form>
+      }
+    </div>
+
+    <div class="meta-row">
+      <span>{{ g.videos_count }} סרטונים</span>
+      <span>{{ g.members_count }} תלמידים</span>
+      <span>נוצרה ב-{{ g.created_at | date: 'dd/MM/yyyy' }}</span>
+    </div>
+
+    <!-- סרטונים -->
+    <section class="section">
+      <div class="section-title">
+        <h2>סרטונים</h2>
+        <span class="count">{{ videos.value().length }}</span>
+      </div>
+
+      @if (!isVideoFormOpen()) {
+        <button type="button" class="btn btn-accent btn-sm add-video-btn" (click)="openAddVideo()">
+          + הוספת סרטון
+        </button>
+      } @else {
+        <app-video-form
+          [videoToEdit]="videoBeingEdited()"
+          [isSaving]="isSavingVideo()"
+          [errorMessage]="videoFormError()"
+          (save)="saveVideo($event)"
+          (cancel)="closeVideoForm()"
+        />
+      }
+
+      @if (videos.isLoading()) {
+        <p class="loading-text">טוען סרטונים...</p>
+      } @else {
+        <app-video-list
+          [videos]="videos.value()"
+          [canManage]="true"
+          (edit)="openEditVideo($event)"
+          (delete)="deleteVideo($event)"
+        />
+      }
+    </section>
+
+    <!-- תלמידים -->
+    <section class="section">
+      <div class="section-title">
+        <h2>תלמידים</h2>
+        <span class="count">{{ members.value().length }}</span>
+      </div>
+
+      @if (membersError(); as msg) {
+        <div class="form-error-banner">{{ msg }}</div>
+      }
+
+      @if (members.isLoading()) {
+        <p class="loading-text">טוען...</p>
+      } @else if (members.value().length === 0) {
+        <div class="empty-state">
+          <p>עדיין אין תלמידים בקבוצה. שתף את סיסמת הקבוצה כדי שיוכלו להצטרף.</p>
+        </div>
+      } @else {
+        <ol class="roster">
+          @for (member of members.value(); track member.id; let i = $index) {
+            <li class="roster-row">
+              <span class="index">{{ i + 1 }}</span>
+              <span class="name">{{ member.user.username }}</span>
+              <span class="date">הצטרף/ה ב-{{ member.joined_at | date: 'dd/MM/yyyy' }}</span>
+              <button type="button" class="btn btn-danger btn-sm" (click)="removeMember(member)">הסרה</button>
+            </li>
+          }
+        </ol>
+      }
+    </section>
+
+    <!-- הגדרות מתקדמות -->
+    <section class="section">
+      <div class="section-title">
+        <h2>הגדרות קבוצה</h2>
+      </div>
+
+      <div class="card danger-zone">
+        @if (!isChangingPassword()) {
+          <div class="danger-row">
+            <div>
+              <h3>סיסמת הקבוצה</h3>
+              <p>שינוי הסיסמה ימנע מתלמידים חדשים להצטרף עם הסיסמה הישנה.</p>
+            </div>
+            <button type="button" class="btn btn-ghost" (click)="isChangingPassword.set(true)">שינוי סיסמה</button>
+          </div>
+        } @else {
+          <form (ngSubmit)="savePassword()" [formGroup]="passwordForm" novalidate class="password-form">
+            @if (passwordError(); as msg) {
+              <div class="form-error-banner">{{ msg }}</div>
+            }
+            <div class="field">
+              <label class="label" for="new-password">סיסמה חדשה</label>
+              <input id="new-password" type="text" class="input input-mono" formControlName="new_password" />
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn btn-ghost" (click)="isChangingPassword.set(false)">ביטול</button>
+              <button type="submit" class="btn btn-accent" [disabled]="isSavingPassword()">
+                {{ isSavingPassword() ? 'שומר...' : 'עדכון סיסמה' }}
+              </button>
+            </div>
+          </form>
+        }
+        @if (passwordSuccess(); as msg) {
+          <div class="form-success-banner">{{ msg }}</div>
+        }
+      </div>
+
+      <div class="card danger-zone danger-zone--delete">
+        <div class="danger-row">
+          <div>
+            <h3>מחיקת קבוצה</h3>
+            <p>פעולה בלתי הפיכה — כל הסרטונים והחברויות בקבוצה יימחקו לצמיתות.</p>
+          </div>
+          <button type="button" class="btn btn-danger" (click)="deleteGroup()">מחיקת קבוצה</button>
+        </div>
+        @if (deleteGroupError(); as msg) {
+          <div class="form-error-banner">{{ msg }}</div>
+        }
+      </div>
+    </section>
+  }
+</div>

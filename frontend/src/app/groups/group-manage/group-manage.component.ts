@@ -76,7 +76,7 @@ export class GroupManageComponent {
   // --- change password ---
   isChangingPassword = signal(false);
   passwordForm = this.fb.nonNullable.group({
-    new_password: ['', [Validators.required, Validators.minLength(4)]],
+    new_password: ['', [Validators.required, Validators.minLength(6)]],
   });
   passwordError = signal<string | null>(null);
   passwordSuccess = signal<string | null>(null);

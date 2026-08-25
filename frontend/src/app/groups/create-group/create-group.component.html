@@ -8,14 +8,14 @@
 
   <form class="card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
     @if (errorMessage(); as msg) {
-      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    <div class="form-error-banner" role="alert">{{ msg }}</div>
     }
 
     <div class="field">
       <label class="label" for="name">שם הקבוצה</label>
       <input id="name" type="text" class="input" formControlName="name" placeholder="לדוגמה: Python Beginners" />
       @if (name.invalid && name.touched) {
-        <span class="error-text">שם הקבוצה חייב להכיל לפחות 2 תווים.</span>
+      <span class="error-text">שם הקבוצה חייב להכיל לפחות 2 תווים.</span>
       }
     </div>
 
@@ -30,7 +30,7 @@
       <input id="password" type="text" class="input input-mono" formControlName="password"
         placeholder="לדוגמה: PY123" />
       @if (password.invalid && password.touched) {
-        <span class="error-text">סיסמת הקבוצה חייבת להכיל לפחות 4 תווים.</span>
+      <span class="error-text">סיסמת הקבוצה חייבת להכיל לפחות 6 תווים.</span>
       }
       <span class="hint">שתף את הסיסמה הזו עם מי שתרצה שיצטרף לקבוצה כתלמיד.</span>
     </div>

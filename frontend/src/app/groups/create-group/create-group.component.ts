@@ -21,7 +21,7 @@ export class CreateGroupComponent {
   form = this.fb.nonNullable.group({
     name: ['', [Validators.required, Validators.minLength(2)]],
     description: [''],
-    password: ['', [Validators.required, Validators.minLength(4)]],
+    password: ['', [Validators.required, Validators.minLength(6)]],
   });
 
   get name() { return this.form.controls.name; }

@@ -1,0 +1,34 @@
+<div class="page">
+  @if (group.isLoading()) {
+    <p class="loading-text">טוען...</p>
+  } @else if (group.error()) {
+    <div class="form-error-banner">לא ניתן לטעון את הקבוצה. ייתכן שאין לך גישה אליה.</div>
+  } @else if (group.value(); as g) {
+    <div class="page-header">
+      <div>
+        <span class="badge badge-member">חבר/ה</span>
+        <h1>{{ g.name }}</h1>
+        <p>{{ g.description || 'ללא תיאור' }}</p>
+      </div>
+    </div>
+
+    <div class="meta-row">
+      <span>{{ g.videos_count }} סרטונים</span>
+      <span>מנחה: {{ g.owner_username }}</span>
+      <span>הצטרפת ב-{{ g.created_at | date: 'dd/MM/yyyy' }}</span>
+    </div>
+
+    <section class="section">
+      <div class="section-title">
+        <h2>סרטונים</h2>
+        <span class="count">{{ videos.value().length }}</span>
+      </div>
+
+      @if (videos.isLoading()) {
+        <p class="loading-text">טוען סרטונים...</p>
+      } @else {
+        <app-video-list [videos]="videos.value()" [canManage]="false" />
+      }
+    </section>
+  }
+</div>

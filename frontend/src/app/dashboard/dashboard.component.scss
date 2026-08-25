@@ -1,0 +1,13 @@
+.header-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+@media (max-width: 480px) {
+  .header-actions {
+    width: 100%;
+  }
+  .header-actions .btn {
+    flex: 1;
+  }
+}

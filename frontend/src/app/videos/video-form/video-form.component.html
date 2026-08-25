@@ -1,0 +1,37 @@
+<form class="video-form" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+  <h3>{{ videoToEdit() ? 'עריכת סרטון' : 'הוספת סרטון' }}</h3>
+
+  @if (errorMessage(); as msg) {
+    <div class="form-error-banner" role="alert">{{ msg }}</div>
+  }
+
+  <div class="field">
+    <label class="label" for="video-title">כותרת</label>
+    <input id="video-title" type="text" class="input" formControlName="title" placeholder="לדוגמה: Python Variables" />
+    @if (title.invalid && title.touched) {
+      <span class="error-text">יש להזין כותרת.</span>
+    }
+  </div>
+
+  <div class="field">
+    <label class="label" for="video-description">תיאור</label>
+    <textarea id="video-description" class="input" formControlName="description" rows="2"
+      placeholder="תיאור קצר (אופציונלי)"></textarea>
+  </div>
+
+  <div class="field">
+    <label class="label" for="video-url">קישור לסרטון</label>
+    <input id="video-url" type="url" class="input input-mono" formControlName="url"
+      placeholder="https://youtube.com/watch?v=..." />
+    @if (url.invalid && url.touched) {
+      <span class="error-text">יש להזין קישור תקין (החל ב-http:// או https://).</span>
+    }
+  </div>
+
+  <div class="form-actions">
+    <button type="button" class="btn btn-ghost" (click)="onCancel()">ביטול</button>
+    <button type="submit" class="btn btn-accent" [disabled]="isSaving()">
+      {{ isSaving() ? 'שומר...' : (videoToEdit() ? 'שמירת שינויים' : 'הוספת סרטון') }}
+    </button>
+  </div>
+</form>

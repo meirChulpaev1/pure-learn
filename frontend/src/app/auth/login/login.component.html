@@ -1,0 +1,37 @@
+<div class="auth-page">
+  <form class="card auth-card" [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+    <div class="auth-header">
+      <span class="tab-label" style="--tab-color: var(--color-teal);">כניסה</span>
+      <h1>התחברות</h1>
+      <p>היכנס כדי לראות את הקבוצות שלך — הקבוצות שאתה מנהל, והקבוצות שהצטרפת אליהן.</p>
+    </div>
+
+    @if (errorMessage(); as msg) {
+      <div class="form-error-banner" role="alert">{{ msg }}</div>
+    }
+
+    <div class="field">
+      <label class="label" for="username">שם משתמש</label>
+      <input id="username" type="text" class="input" formControlName="username" autocomplete="username" />
+      @if (username.invalid && username.touched) {
+        <span class="error-text">יש להזין שם משתמש.</span>
+      }
+    </div>
+
+    <div class="field">
+      <label class="label" for="password">סיסמה</label>
+      <input id="password" type="password" class="input" formControlName="password" autocomplete="current-password" />
+      @if (password.invalid && password.touched) {
+        <span class="error-text">יש להזין סיסמה.</span>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-primary" [disabled]="isSubmitting()">
+      {{ isSubmitting() ? 'מתחבר...' : 'התחבר' }}
+    </button>
+
+    <p class="auth-footer">
+      אין לך חשבון עדיין? <a routerLink="/register">הרשמה</a>
+    </p>
+  </form>
+</div>

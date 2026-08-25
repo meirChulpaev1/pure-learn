@@ -1,0 +1,80 @@
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.9rem 1.5rem;
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--color-paper) !important;
+  text-decoration: none !important;
+}
+
+.brand-mark {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+.links {
+  display: flex;
+  gap: 1.25rem;
+  flex-grow: 1;
+}
+
+.links a {
+  color: rgba(238, 233, 222, 0.75) !important;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none !important;
+  padding-bottom: 0.2rem;
+  border-bottom: 2px solid transparent;
+}
+
+.links a:hover,
+.links a.active {
+  color: var(--color-paper) !important;
+  border-bottom-color: var(--color-accent);
+}
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.username {
+  font-size: 0.88rem;
+  color: rgba(238, 233, 222, 0.85);
+}
+
+.navbar .btn-ghost {
+  border-color: rgba(238, 233, 222, 0.3);
+  color: var(--color-paper);
+}
+.navbar .btn-ghost:hover {
+  background: rgba(238, 233, 222, 0.1);
+}
+
+@media (max-width: 640px) {
+  .navbar {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .links {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+  }
+}

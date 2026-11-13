@@ -13,7 +13,7 @@ class User(AbstractUser):
     """
     email = models.EmailField(unique=True)
 
-    REQUIRED_FIELDS = ['email']  # username + password כבר נדרשים כברירת מחדל
+    REQUIRED_FIELDS = ['email']
 
     def __str__(self):
         return self.username
